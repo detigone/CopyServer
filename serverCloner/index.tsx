@@ -476,12 +476,22 @@ async function copyChannelsWithVerification(
 
     log(`Обнаружено каналов: ${usable.length} (из них скрытых/приватных: ${hiddenCount})`, "info");
 
+    const channelList = cfg.copyHiddenChannels === false
+        ? usable.filter((c: any) => !isChannelHidden(c, cfg.src))
+        : usable;
+
+    if (cfg.copyHiddenChannels === false) {
+        log(`Фильтрация каналов: скрытые каналы отключены пользователем (${hiddenCount} исключено)`, "warn");
+    } else {
+        log(`Копирование ВСЕХ каналов: 100% (включая ${hiddenCount} скрытых с правами overwrites)`, "success");
+    }
+
     // Фаза 1: Категории
-    const cats = usable.filter((c: any) => c.type === 4).sort(byPos);
+    const cats = channelList.filter((c: any) => c.type === 4).sort(byPos);
     const catPos = new Map<string, number>(cats.map((c: any) => [c.id as string, c.position as number]));
 
     // Фаза 2: Каналы
-    const others = usable
+    const others = channelList
         .filter((c: any) => c.type !== 4)
         .sort((a: any, b: any) => {
             const pa = a.parent_id != null ? catPos.get(a.parent_id) ?? 0 : -1;
@@ -870,6 +880,7 @@ function SettingsPanel() {
     const [copyHiddenChannels, setCopyHiddenChannels] = useState(true); // Копирование ВСЕХ каналов (включая скрытые)
 
     const [busy, setBusy] = useState(false);
+    const [showConfirm, setShowConfirm] = useState(false);
     const [progressStep, setProgressStep] = useState("");
     const [progressPercent, setProgressPercent] = useState(0);
     const [auditReport, setAuditReport] = useState<AuditReport | null>(null);
@@ -911,6 +922,7 @@ function SettingsPanel() {
             setSettings(true);
             setImages(true);
             setUserOW(false);
+            setCopyHiddenChannels(true);
         } else if (type === "structure") {
             setRoles(true);
             setChannels(true);
@@ -918,6 +930,7 @@ function SettingsPanel() {
             setSettings(false);
             setImages(false);
             setUserOW(false);
+            setCopyHiddenChannels(true);
         } else if (type === "media") {
             setRoles(false);
             setChannels(false);
@@ -925,15 +938,20 @@ function SettingsPanel() {
             setSettings(true);
             setImages(true);
             setUserOW(false);
+            setCopyHiddenChannels(false);
         }
     };
 
-    const onCopy = () => {
+    const handleStartClick = () => {
         if (!src || !dst) return showToast("Выбери оба сервера!", "failure");
         if (src === dst) return showToast("Исходный и целевой сервер должны отличаться!", "failure");
         if (!roles && !channels && !emojis && !settings)
             return showToast("Отметь хотя бы один элемент для копирования!", "failure");
+        setShowConfirm(true);
+    };
 
+    const confirmAndStart = () => {
+        setShowConfirm(false);
         abortRef.current = false;
         setBusy(true);
         setEntries([]);
@@ -1211,7 +1229,7 @@ function SettingsPanel() {
                     gap: "6px"
                 }}>
                     <span>🛡️</span>
-                    <span>Безопасность аккаунта & Водяной знак</span>
+                    <span>Безопасность аккаунта, скрытые каналы & водяной знак</span>
                 </div>
 
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "8px" }}>
@@ -1223,6 +1241,16 @@ function SettingsPanel() {
                         subtitle="Рандомизированный джиттер (900-1500мс) и микропаузы каждые 7 запросов против антиспам-системы Discord"
                         icon={<span>🔒</span>}
                         badge="РЕКОМЕНДУЕТСЯ"
+                    />
+
+                    <DiscordSwitch
+                        checked={copyHiddenChannels}
+                        onChange={setCopyHiddenChannels}
+                        disabled={busy || !channels}
+                        title="Скрытые и приватные каналы (с правами)"
+                        subtitle="Копировать скрытые админ-каналы и закрытые ветки с их точными правами доступа (overwrites)"
+                        icon={<span>👁️</span>}
+                        badge="100% ПРАВА"
                     />
 
                     <DiscordSwitch
@@ -1242,11 +1270,15 @@ function SettingsPanel() {
                         alignItems: "center",
                         gap: "10px",
                         background: "var(--background-tertiary, #1e1f22)",
+                        border: "1px solid rgba(88, 101, 242, 0.3)",
                         padding: "8px 12px",
                         borderRadius: "6px",
-                        marginTop: "2px"
+                        marginTop: "4px"
                     }}>
-                        <span style={{ fontSize: "12px", color: "var(--text-muted, #949ba4)", whiteSpace: "nowrap" }}>Текст водяного знака:</span>
+                        <span style={{ fontSize: "12px", color: "var(--text-muted, #949ba4)", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: "4px" }}>
+                            <span>🏷️</span>
+                            <span>Текст водяного знака:</span>
+                        </span>
                         <input
                             type="text"
                             value={watermarkText}
@@ -1261,9 +1293,27 @@ function SettingsPanel() {
                                 color: "var(--text-normal, #dbdee1)",
                                 padding: "6px 10px",
                                 fontSize: "12px",
-                                outline: "none"
+                                outline: "none",
+                                fontFamily: "monospace"
                             }}
                         />
+                        <button
+                            type="button"
+                            onClick={() => setWatermarkText("[Клон: ServerCloner Pro]")}
+                            disabled={busy}
+                            style={{
+                                background: "var(--background-secondary, #2b2d31)",
+                                border: "1px solid var(--background-modifier-accent, #3f4147)",
+                                color: "var(--text-muted, #949ba4)",
+                                padding: "5px 10px",
+                                fontSize: "11px",
+                                borderRadius: "4px",
+                                cursor: "pointer",
+                                whiteSpace: "nowrap"
+                            }}
+                        >
+                            Сброс
+                        </button>
                     </div>
                 )}
             </div>
@@ -1343,7 +1393,7 @@ function SettingsPanel() {
             <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                 <div style={{ display: "flex", gap: "10px" }}>
                     <button
-                        onClick={onCopy}
+                        onClick={handleStartClick}
                         disabled={busy}
                         style={{
                             flex: 1,
@@ -1633,6 +1683,84 @@ function SettingsPanel() {
                     )}
                 </div>
             </div>
+
+            {/* Modal Confirmation */}
+            {showConfirm && (
+                <div style={{
+                    position: "fixed",
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    backgroundColor: "rgba(0, 0, 0, 0.75)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    zIndex: 99999,
+                    padding: "20px"
+                }}>
+                    <div style={{
+                        backgroundColor: "var(--background-primary, #313338)",
+                        border: "1px solid var(--background-modifier-accent, #3f4147)",
+                        borderRadius: "12px",
+                        width: "100%",
+                        maxWidth: "480px",
+                        boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+                        overflow: "hidden"
+                    }}>
+                        <div style={{ padding: "18px 22px", borderBottom: "1px solid var(--background-modifier-accent, #3f4147)" }}>
+                            <div style={{ fontSize: "17px", fontWeight: 700, color: "var(--header-primary, #ffffff)" }}>
+                                Запустить безопасное клонирование?
+                            </div>
+                        </div>
+                        <div style={{ padding: "18px 22px", display: "flex", flexDirection: "column", gap: "12px", fontSize: "13px", color: "var(--text-normal, #dbdee1)" }}>
+                            <p>Вы собираетесь перенести структуру сервера:</p>
+                            <div style={{ background: "var(--background-secondary, #2b2d31)", padding: "12px", borderRadius: "8px", fontSize: "13px", display: "flex", flexDirection: "column", gap: "6px" }}>
+                                <div><strong>Исходный:</strong> {srcGuild?.name || src}</div>
+                                <div><strong>Целевой:</strong> {dstGuild?.name || dst}</div>
+                            </div>
+                            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                                <div>• <strong>Каналы:</strong> {channels ? (copyHiddenChannels ? "100% каналов (включая скрытые и приватные с правами)" : "Только публичные (скрытые отключены)") : "Отключено"}</div>
+                                <div>• <strong>Водяной знак:</strong> {watermark ? `Включен («${watermarkText}»)` : "Выключен (чистые описания 1:1)"}</div>
+                                <div>• <strong>Безопасность:</strong> {stealthMode ? "Stealth Mode (рандомизированный джиттер и микропаузы)" : "Обычный режим"}</div>
+                                <div>• <strong>Пропуск дубликатов:</strong> {skipDuplicates ? "Включен" : "Выключен"}</div>
+                            </div>
+                        </div>
+                        <div style={{ padding: "14px 22px", background: "var(--background-secondary, #2b2d31)", display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+                            <button
+                                onClick={() => setShowConfirm(false)}
+                                style={{
+                                    padding: "8px 16px",
+                                    background: "transparent",
+                                    border: "1px solid var(--background-modifier-accent, #3f4147)",
+                                    borderRadius: "6px",
+                                    color: "var(--text-normal, #dbdee1)",
+                                    cursor: "pointer",
+                                    fontSize: "13px",
+                                    fontWeight: 500
+                                }}
+                            >
+                                Отмена
+                            </button>
+                            <button
+                                onClick={confirmAndStart}
+                                style={{
+                                    padding: "8px 18px",
+                                    background: "var(--brand-experiment, #5865f2)",
+                                    border: "none",
+                                    borderRadius: "6px",
+                                    color: "#ffffff",
+                                    cursor: "pointer",
+                                    fontSize: "13px",
+                                    fontWeight: 600
+                                }}
+                            >
+                                Подтвердить и запустить
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

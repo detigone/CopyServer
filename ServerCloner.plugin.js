@@ -117,8 +117,10 @@ const PLUGIN_STYLES = `
     align-items: center;
     gap: 10px;
     background: var(--background-tertiary, #1e1f22);
+    border: 1px solid rgba(88, 101, 242, 0.3);
     padding: 8px 12px;
     border-radius: 6px;
+    margin-top: 6px;
 }
 .sc-watermark-input {
     flex: 1;
@@ -129,6 +131,23 @@ const PLUGIN_STYLES = `
     padding: 6px 10px;
     font-size: 12px;
     outline: none;
+    font-family: monospace;
+}
+.sc-watermark-reset-btn {
+    background: var(--background-secondary, #2b2d31);
+    border: 1px solid var(--background-modifier-accent, #3f4147);
+    color: var(--text-muted, #949ba4);
+    padding: 5px 10px;
+    font-size: 11px;
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s ease;
+}
+.sc-watermark-reset-btn:hover {
+    color: var(--text-normal, #ffffff);
+    background: var(--background-modifier-hover, #35373c);
+    border-color: var(--brand-experiment, #5865f2);
 }
 .sc-servers-grid {
     display: grid;
@@ -527,6 +546,7 @@ module.exports = class ServerCloner {
             watermark: false,
             watermarkText: "[Клон: ServerCloner Pro]",
             stealthMode: true,
+            copyHiddenChannels: true,
             busy: false,
             autoScroll: true,
         };
@@ -654,7 +674,7 @@ module.exports = class ServerCloner {
             return card;
         };
 
-        // Специальный блок: Stealth Mode и Водяной знак
+        // Специальный блок: Stealth Mode, Скрытые каналы и Водяной знак
         const watermarkInput = this.h("input", {
             class: "sc-watermark-input",
             type: "text",
@@ -663,11 +683,21 @@ module.exports = class ServerCloner {
         });
         watermarkInput.oninput = (e) => { state.watermarkText = e.target.value; };
 
+        const watermarkResetBtn = this.h("button", {
+            class: "sc-watermark-reset-btn",
+            type: "button"
+        }, "Сброс");
+        watermarkResetBtn.onclick = () => {
+            state.watermarkText = "[Клон: ServerCloner Pro]";
+            watermarkInput.value = "[Клон: ServerCloner Pro]";
+        };
+
         const watermarkInputWrap = this.h(
             "div",
-            { class: "sc-watermark-input-wrap", style: "display:none;" },
-            this.h("span", { style: "font-size:12px;color:var(--text-muted);white-space:nowrap;" }, "Текст водяного знака:"),
-            watermarkInput
+            { class: "sc-watermark-input-wrap", style: state.watermark ? "display:flex;" : "display:none;" },
+            this.h("span", { style: "font-size:12px;color:var(--text-muted);white-space:nowrap;display:flex;align-items:center;gap:4px;" }, "🏷️ Текст водяного знака:"),
+            watermarkInput,
+            watermarkResetBtn
         );
 
         const specialSection = this.h(
@@ -677,12 +707,13 @@ module.exports = class ServerCloner {
                 "div",
                 { class: "sc-special-head" },
                 this.h("span", {}, "🛡️"),
-                this.h("span", {}, "Безопасность аккаунта & Водяной знак")
+                this.h("span", {}, "Безопасность аккаунта, скрытые каналы & водяной знак")
             ),
             this.h(
                 "div",
                 { class: "sc-options-grid" },
                 createOption("stealthMode", "Stealth Mode (Защита аккаунта)", "Джиттер 900-1500мс и микропаузы каждые 7 запросов против антиспам-детекта Discord", "🔒", true, "РЕКОМЕНДОВАНО"),
+                createOption("copyHiddenChannels", "Скрытые каналы (с правами)", "Копировать скрытые админ-каналы и закрытые ветки с их точными правами доступа", "👁️", true, "100% ПРАВА"),
                 createOption("watermark", "Водяной знак в описании каналов", "Добавлять ли отметку о клонировании в topic каналов (можно выключить)", "🏷️", false)
             ),
             watermarkInputWrap
@@ -691,9 +722,9 @@ module.exports = class ServerCloner {
         const applyPreset = (preset) => {
             if (state.busy) return;
             const settingsMap = {
-                all: { roles: true, channels: true, emojis: true, settings: true, images: true, userOW: false, skipDuplicates: true },
-                structure: { roles: true, channels: true, emojis: false, settings: false, images: false, userOW: false, skipDuplicates: true },
-                media: { roles: false, channels: false, emojis: true, settings: true, images: true, userOW: false, skipDuplicates: true },
+                all: { roles: true, channels: true, emojis: true, settings: true, images: true, userOW: false, skipDuplicates: true, copyHiddenChannels: true },
+                structure: { roles: true, channels: true, emojis: false, settings: false, images: false, userOW: false, skipDuplicates: true, copyHiddenChannels: true },
+                media: { roles: false, channels: false, emojis: true, settings: true, images: true, userOW: false, skipDuplicates: true, copyHiddenChannels: false },
             };
             const map = settingsMap[preset];
             if (!map) return;
@@ -708,11 +739,12 @@ module.exports = class ServerCloner {
             "div",
             { class: "sc-options-grid" },
             createOption("roles", "Роли и права доступа", "Без системных бот-ролей, с сохранением цветов и точной иерархии", "🛡️", true),
-            createOption("channels", "ВСЕ каналы (включая скрытые)", "Текстовые, войсы, скрытые админ-каналы с их точными правами доступа", "📁", true, "100% ПРАВА"),
+            createOption("channels", "Каналы и категории", "Текстовые, войсы, форумы и категории с точным позиционированием", "📁", true),
             createOption("emojis", "Пользовательские эмодзи", "Lossless CDN перенос с паузами для обхода блокировок", "😀", true),
             createOption("settings", "Основные настройки", "Название, верификация, AFK, системные каналы и оповещения", "⚙️", true),
             createOption("images", "Иконка и баннер", "Ultra-HD 4096px загрузка аватара и баннера сервера", "🎨", true),
-            createOption("skipDuplicates", "Пропускать дубликаты", "Не создавать заново уже существующие роли/эмодзи", "⚡", true)
+            createOption("skipDuplicates", "Пропускать дубликаты", "Не создавать заново уже существующие роли/эмодзи", "⚡", true),
+            createOption("userOW", "Индивидуальные права участников", "Переносить персональные права конкретных пользователей на каналы", "👤", false)
         );
 
         // Progress bar container
@@ -801,9 +833,18 @@ module.exports = class ServerCloner {
                     const srcName = guilds.find((g) => g.id === state.src)?.name || "Исходный";
                     const dstName = guilds.find((g) => g.id === state.dst)?.name || "Целевой";
 
+                    const hiddenInfo = state.copyHiddenChannels ? "100% каналов (включая скрытые и приватные с правами)" : "только публичные (скрытые отключены)";
+                    const watermarkInfo = state.watermark ? `включен («${state.watermarkText}»)` : "ВЫКЛЮЧЕН (описания 1:1)";
+                    const stealthInfo = state.stealthMode ? "Stealth Mode (джиттер 900-1500мс и микропаузы)" : "обычный режим";
+
                     BdApi.UI.showConfirmationModal(
                         "Запустить безопасное клонирование?",
-                        `Перенести все данные из «${srcName}» в «${dstName}»? Будет скопировано 100% каналов (включая скрытые с приватными правами), включен джиттер безопасности ${state.stealthMode ? "(Stealth Mode: ВКЛ)" : ""} и ${state.watermark ? `добавлен водяной знак «${state.watermarkText}»` : "водяной знак ВЫКЛЮЧЕН"}.`,
+                        `Перенести структуру сервера из «${srcName}» в «${dstName}»?\n\n` +
+                        `• Каналы: ${state.channels ? hiddenInfo : "отключено"}\n` +
+                        `• Водяной знак: ${watermarkInfo}\n` +
+                        `• Безопасность: ${stealthInfo}\n` +
+                        `• Защита от дубликатов: ${state.skipDuplicates ? "включена" : "выключена"}\n` +
+                        `• Верификация: двухфазная сверка целостности после создания.`,
                         {
                             confirmText: "Клонировать",
                             cancelText: "Отмена",
@@ -1186,6 +1227,17 @@ module.exports = class ServerCloner {
             }
         });
         log(`Обнаружено каналов: ${usable.length} (из них скрытых/приватных: ${hiddenCount})`, "info");
+
+        if (cfg.copyHiddenChannels === false) {
+            log(`Фильтрация каналов: скрытые каналы отключены пользователем (${hiddenCount} исключено)`, "warn");
+            usable = usable.filter((ch) => {
+                const everyoneOW = ch.permission_overwrites?.find?.((ow) => ow.id === cfg.src && ow.type === 0);
+                const isHidden = everyoneOW && (BigInt(everyoneOW.deny || "0") & 1024n) === 1024n;
+                return !isHidden;
+            });
+        } else {
+            log(`Копирование ВСЕХ каналов: 100% (включая ${hiddenCount} скрытых с правами overwrites)`, "success");
+        }
 
         const cats = usable.filter((c) => c.type === 4).sort(byPos);
         const catPos = new Map(cats.map((c) => [c.id, c.position]));
