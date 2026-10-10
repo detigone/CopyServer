@@ -22,7 +22,8 @@ import {
   Square,
   CheckCircle2,
   AlertTriangle,
-  Clock
+  Clock,
+  Tag
 } from 'lucide-react';
 
 interface LogItem {
@@ -59,6 +60,8 @@ export function DiscordPluginSimulator() {
   const [settings, setSettings] = useState(true);
   const [images, setImages] = useState(true);
   const [skipDuplicates, setSkipDuplicates] = useState(true);
+  const [watermark, setWatermark] = useState(false);
+  const [watermarkText, setWatermarkText] = useState('[Клон: ServerCloner Pro]');
 
   // Execution & Verification State
   const [isCloning, setIsCloning] = useState(false);
@@ -265,6 +268,12 @@ export function DiscordPluginSimulator() {
 
       setProgressStep('Фаза 2: Создание каналов и категорийных overwrites...');
       setProgressPercent(68);
+      if (watermark) {
+        addLog(`Водяной знак активен: метка «${watermarkText}» будет добавлена в описания (topic)`, 'info');
+      } else {
+        addLog('Водяной знак отключен: оригинальные описания каналов переносятся без изменений', 'info');
+      }
+
       const mockChannels = [
         '📢 announcements (Анонсы)',
         '💬 general-chat (Текст)',
@@ -278,7 +287,8 @@ export function DiscordPluginSimulator() {
         setProgressPercent(68 + Math.round(((i + 1) / mockChannels.length) * 16));
         setProgressStep(`Каналы (${i + 1}/${mockChannels.length}): ${mockChannels[i]}`);
         await new Promise(r => setTimeout(r, 320));
-        addLog(`[Канал] Создан с правами доступа: ${mockChannels[i]}`, 'info');
+        const topicNote = watermark ? ` [topic: "... · ${watermarkText}"]` : '';
+        addLog(`[Канал] Создан с правами доступа: ${mockChannels[i]}${topicNote}`, 'info');
         channelsCreatedCount++;
       }
 
@@ -752,6 +762,73 @@ export function DiscordPluginSimulator() {
                   }`} />
                 </div>
               </div>
+
+              {/* Watermark Toggle */}
+              <div
+                onClick={() => !isCloning && setWatermark(!watermark)}
+                className={`flex items-center justify-between p-3.5 rounded-xl border transition-all cursor-pointer select-none ${
+                  watermark
+                    ? 'bg-[#2b2d31] border-[#5865f2]/50 shadow-sm'
+                    : 'bg-[#2b2d31]/60 border-[#3f4147]/40 opacity-75 hover:opacity-100'
+                }`}
+              >
+                <div className="flex items-center gap-3 min-w-0 pr-3">
+                  <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
+                    watermark ? 'bg-[#5865f2]/20 text-[#5865f2]' : 'bg-white/5 text-[#949ba4]'
+                  }`}>
+                    <Tag className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-sm font-semibold text-white">Водяной знак в описании каналов</h3>
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                        watermark ? 'bg-[#23a55a]/20 text-[#23a55a]' : 'bg-white/5 text-[#949ba4]'
+                      }`}>
+                        {watermark ? 'ВКЛЮЧЕН' : 'ОТКЛЮЧЕН'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-[#949ba4]">
+                      {watermark
+                        ? `Добавляет отметку в поле topic каналов`
+                        : 'Оригинальные описания каналов сохраняются 1:1 без отметок'}
+                    </p>
+                  </div>
+                </div>
+                <div className={`w-11 h-6 rounded-full relative transition-colors duration-200 shrink-0 ${
+                  watermark ? 'bg-[#23a55a]' : 'bg-[#4e5058]'
+                }`}>
+                  <div className={`w-4 h-4 rounded-full bg-white shadow absolute top-1 transition-all duration-200 ${
+                    watermark ? 'left-6' : 'left-1'
+                  }`} />
+                </div>
+              </div>
+
+              {/* Watermark Text Input Field (Full Width) */}
+              {watermark && (
+                <div className="md:col-span-2 bg-[#1e1f22] border border-[#5865f2]/30 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fadeIn">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-[#dbdee1]">
+                    <Tag className="w-3.5 h-3.5 text-[#5865f2]" />
+                    <span>Текст водяного знака:</span>
+                  </div>
+                  <div className="flex items-center gap-2 flex-1 max-w-md">
+                    <input
+                      type="text"
+                      value={watermarkText}
+                      onChange={e => setWatermarkText(e.target.value)}
+                      disabled={isCloning}
+                      placeholder="Например: [Клон: ServerCloner Pro]"
+                      className="w-full bg-[#2b2d31] border border-[#3f4147] focus:border-[#5865f2] rounded-lg px-3 py-1.5 text-xs text-white outline-none font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setWatermarkText('[Клон: ServerCloner Pro]')}
+                      className="text-[11px] text-[#949ba4] hover:text-white px-2.5 py-1.5 bg-[#2b2d31] hover:bg-[#3f4147] rounded-lg border border-white/5 whitespace-nowrap transition-colors"
+                    >
+                      Сброс
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
