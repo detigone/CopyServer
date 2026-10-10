@@ -1,0 +1,6 @@
+{
+  "name": "Discord Server Cloner Plugin",
+  "description": "Мощный визуальный интерфейс для плагина клонирования серверов Discord (Vencord и BetterDiscord) с поддержкой ролей, каналов, прав, эмодзи и настроек.",
+  "permissions": [],
+  "capabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
