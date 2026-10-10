@@ -6,7 +6,6 @@ import {
   Smile,
   Settings2,
   Image as ImageIcon,
-  UserCheck,
   Check,
   Copy,
   Trash2,
@@ -18,7 +17,12 @@ import {
   Layers,
   ChevronDown,
   Info,
-  Server
+  Server,
+  Zap,
+  Square,
+  CheckCircle2,
+  AlertTriangle,
+  Clock
 } from 'lucide-react';
 
 interface LogItem {
@@ -27,6 +31,18 @@ interface LogItem {
   tag: 'ИНФО' | 'УСПЕХ' | 'ПРЕДУПР' | 'ОШИБКА';
   type: 'info' | 'success' | 'warn' | 'error';
   msg: string;
+}
+
+interface AuditReport {
+  rolesExpected: number;
+  rolesCreated: number;
+  channelsExpected: number;
+  channelsCreated: number;
+  channelsVerified: number;
+  emojisExpected: number;
+  emojisCreated: number;
+  settingsApplied: boolean;
+  durationSec: number;
 }
 
 export function DiscordPluginSimulator() {
@@ -42,9 +58,9 @@ export function DiscordPluginSimulator() {
   const [emojis, setEmojis] = useState(true);
   const [settings, setSettings] = useState(true);
   const [images, setImages] = useState(true);
-  const [userOW, setUserOW] = useState(false);
+  const [skipDuplicates, setSkipDuplicates] = useState(true);
 
-  // Simulation execution
+  // Execution & Verification State
   const [isCloning, setIsCloning] = useState(false);
   const [progressPercent, setProgressPercent] = useState(0);
   const [progressStep, setProgressStep] = useState('');
@@ -53,7 +69,9 @@ export function DiscordPluginSimulator() {
   const [filterTag, setFilterTag] = useState<'all' | 'info' | 'success' | 'warn' | 'error'>('all');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [copiedLog, setCopiedLog] = useState(false);
+  const [auditReport, setAuditReport] = useState<AuditReport | null>(null);
 
+  const abortRef = useRef(false);
   const consoleEndRef = useRef<HTMLDivElement>(null);
 
   const srcGuild = INITIAL_GUILDS.find(g => g.id === srcGuildId);
@@ -95,7 +113,7 @@ export function DiscordPluginSimulator() {
       setEmojis(true);
       setSettings(true);
       setImages(true);
-      setUserOW(false);
+      setSkipDuplicates(true);
       showToast('Выбран пресет: Полный клон 1:1');
     } else if (preset === 'structure') {
       setRoles(true);
@@ -103,17 +121,22 @@ export function DiscordPluginSimulator() {
       setEmojis(false);
       setSettings(false);
       setImages(false);
-      setUserOW(false);
-      showToast('Выбран пресет: Только структура (роли + каналы)');
+      setSkipDuplicates(true);
+      showToast('Выбран пресет: Только структура');
     } else if (preset === 'media') {
       setRoles(false);
       setChannels(false);
       setEmojis(true);
       setSettings(true);
       setImages(true);
-      setUserOW(false);
+      setSkipDuplicates(true);
       showToast('Выбран пресет: Медиа & Оформление');
     }
+  };
+
+  const handleAbort = () => {
+    abortRef.current = true;
+    addLog('Запрошена немедленная остановка клонирования...', 'warn');
   };
 
   const handleStartClone = async () => {
@@ -130,85 +153,183 @@ export function DiscordPluginSimulator() {
       return;
     }
 
+    abortRef.current = false;
     setIsCloning(true);
     setLogs([]);
-    setProgressPercent(5);
-    setProgressStep('Инициализация сессии и авторизация RestAPI...');
+    setAuditReport(null);
+    setProgressPercent(2);
+    setProgressStep('Pre-Flight проверка прав и лимитов Discord...');
 
-    addLog(`Запуск клонирования: [${srcGuild?.name}] ➔ [${dstGuild?.name}]`, 'info');
-    await new Promise(r => setTimeout(r, 450));
+    const startedTime = Date.now();
 
-    // 1. Roles
+    // 1. Pre-Flight Check
+    addLog(`Запуск Pre-Flight проверки прав и квот: [${srcGuild?.name}] ➔ [${dstGuild?.name}]`, 'info');
+    await new Promise(r => setTimeout(r, 350));
+
+    addLog(`Целевой сервер «${dstGuild?.name}»: каналов ${dstGuild?.channelsCount}/500, ролей ${dstGuild?.rolesCount}/250. Проверка пройдена.`, 'success');
+    await new Promise(r => setTimeout(r, 250));
+
+    if (abortRef.current) {
+      setIsCloning(false);
+      return;
+    }
+
+    let rolesCreatedCount = 0;
+    let channelsCreatedCount = 0;
+    let emojisCreatedCount = 0;
+
+    // 2. Roles
     if (roles) {
-      setProgressStep('Копирование прав @everyone и ролей...');
-      setProgressPercent(15);
-      addLog('Роль @everyone: базовые разрешения скопированы', 'success');
-      await new Promise(r => setTimeout(r, 350));
+      setProgressStep('Синхронизация @everyone и создание ролей...');
+      setProgressPercent(12);
+      addLog('Роль @everyone: базовые разрешения синхронизированы', 'success');
+      await new Promise(r => setTimeout(r, 300));
 
-      const mockRolesList = ['Admin [Администратор]', 'Moderator', 'VIP Club', 'Community Member', 'Bot Integration'];
+      const mockRolesList = [
+        'Admin [Администратор]',
+        'Moderator',
+        'VIP Supporter',
+        'Bot Integration Role', // should test filter
+        'Community Member'
+      ];
+
       for (let i = 0; i < mockRolesList.length; i++) {
-        setProgressPercent(15 + Math.round(((i + 1) / mockRolesList.length) * 20));
-        setProgressStep(`Создание ролей (${i + 1}/${mockRolesList.length}): ${mockRolesList[i]}`);
-        addLog(`Роль создана с цветом и правами: ${mockRolesList[i]}`, 'info');
-        await new Promise(r => setTimeout(r, 220));
+        if (abortRef.current) break;
+        const roleName = mockRolesList[i];
+
+        if (roleName.includes('Bot Integration')) {
+          addLog(`Роль «${roleName}» пропущена (системная бот-роль/интеграция)`, 'info');
+          continue;
+        }
+
+        setProgressPercent(12 + Math.round(((i + 1) / mockRolesList.length) * 20));
+        setProgressStep(`Создание ролей (${i + 1}/${mockRolesList.length}): ${roleName}`);
+
+        // Simulate rate limit pacing
+        await new Promise(r => setTimeout(r, 260));
+        addLog(`Роль создана: ${roleName}`, 'info');
+        rolesCreatedCount++;
       }
-      addLog('Иерархия и порядок позиций ролей успешно применены', 'success');
+
+      if (!abortRef.current) {
+        addLog('Иерархия и порядок позиций ролей выставлены', 'success');
+      }
     }
 
-    // 2. Emojis
+    if (abortRef.current) {
+      setIsCloning(false);
+      return;
+    }
+
+    // 3. Emojis with rate limit backoff simulation
     if (emojis) {
-      setProgressStep('Чтение и перенос пользовательских эмодзи...');
-      setProgressPercent(40);
-      const mockEmojisList = ['kekw', 'fire_dance', 'discord_nitro', 'pepe_hype'];
+      setProgressStep('Перенос эмодзи с адаптивными паузами...');
+      setProgressPercent(36);
+      const mockEmojisList = ['kekw', 'fire_dance', 'pepe_hype', 'nitro_badge'];
+
       for (let i = 0; i < mockEmojisList.length; i++) {
-        setProgressPercent(40 + Math.round(((i + 1) / mockEmojisList.length) * 15));
+        if (abortRef.current) break;
+        setProgressPercent(36 + Math.round(((i + 1) / mockEmojisList.length) * 16));
         setProgressStep(`Загрузка эмодзи (${i + 1}/${mockEmojisList.length}): :${mockEmojisList[i]}:`);
-        addLog(`Эмодзи перенесено (Lossless CDN): :${mockEmojisList[i]}:`, 'success');
-        await new Promise(r => setTimeout(r, 200));
+
+        // Simulate rate limit test on 3rd emoji
+        if (i === 2) {
+          addLog('[Рейтлимит 429] Получен заголовок retry_after=1.2s. Адаптивная пауза...', 'warn');
+          await new Promise(r => setTimeout(r, 1200));
+        }
+
+        await new Promise(r => setTimeout(r, 400));
+        addLog(`Эмодзи перенесено (Lossless): :${mockEmojisList[i]}:`, 'success');
+        emojisCreatedCount++;
       }
     }
 
-    // 3. Channels
+    if (abortRef.current) {
+      setIsCloning(false);
+      return;
+    }
+
+    // 4. Two-Phase Channels
     if (channels) {
-      setProgressStep('Создание категорий и каналов...');
-      setProgressPercent(60);
-      const mockChannelsList = [
-        '📁 ━━━ ИНФОРМАЦИЯ ━━━',
+      setProgressStep('Фаза 1: Создание категорий каналов...');
+      setProgressPercent(54);
+      addLog('Создание категорий (type 4) для привязки parent_id...', 'info');
+
+      const mockCategories = ['📁 ИНФОРМАЦИЯ', '📁 ОСНОВНОЕ ОБЩЕНИЕ', '📁 ГОЛОСОВЫЕ КАНАЛЫ'];
+      for (const cat of mockCategories) {
+        if (abortRef.current) break;
+        await new Promise(r => setTimeout(r, 300));
+        addLog(`[Категория] Создана: ${cat}`, 'info');
+        channelsCreatedCount++;
+      }
+
+      setProgressStep('Фаза 2: Создание каналов и категорийных overwrites...');
+      setProgressPercent(68);
+      const mockChannels = [
         '📢 announcements (Анонсы)',
         '💬 general-chat (Текст)',
         '🤖 bot-commands (Текст)',
-        '📁 ━━━ ГОЛОСОВЫЕ ━━━',
         '🔊 Lounge #1 (Голос 96kbps)',
         '🎮 Gaming Room #1 (Голос)'
       ];
-      for (let i = 0; i < mockChannelsList.length; i++) {
-        setProgressPercent(60 + Math.round(((i + 1) / mockChannelsList.length) * 25));
-        setProgressStep(`Создание каналов (${i + 1}/${mockChannelsList.length}): ${mockChannelsList[i]}`);
-        addLog(`Канал создан с правами и slowmode: ${mockChannelsList[i]}`, 'info');
-        await new Promise(r => setTimeout(r, 250));
+
+      for (let i = 0; i < mockChannels.length; i++) {
+        if (abortRef.current) break;
+        setProgressPercent(68 + Math.round(((i + 1) / mockChannels.length) * 16));
+        setProgressStep(`Каналы (${i + 1}/${mockChannels.length}): ${mockChannels[i]}`);
+        await new Promise(r => setTimeout(r, 320));
+        addLog(`[Канал] Создан с правами доступа: ${mockChannels[i]}`, 'info');
+        channelsCreatedCount++;
       }
-      addLog('Все категории, каналы и overwrites прав успешно перенесены', 'success');
+
+      // Verification Phase!
+      if (!abortRef.current) {
+        setProgressStep('Фаза 3: Аудит и проверка всех скопированных каналов...');
+        setProgressPercent(88);
+        addLog('Запуск верификации: опрос GET /guilds/{id}/channels и сверка ID...', 'info');
+        await new Promise(r => setTimeout(r, 600));
+
+        const totalExpectedChannels = mockCategories.length + mockChannels.length;
+        addLog(`ВЕРИФИКАЦИЯ 100% УСПЕШНА: Все каналы (${channelsCreatedCount}/${totalExpectedChannels}) подтверждены на сервере!`, 'success');
+      }
     }
 
-    // 4. Settings & Images
+    if (abortRef.current) {
+      setIsCloning(false);
+      return;
+    }
+
+    // 5. Settings & Images
     if (settings || images) {
-      setProgressStep('Применение настроек сервера, иконки и баннера...');
-      setProgressPercent(90);
+      setProgressStep('Синхронизация системных настроек и графики...');
+      setProgressPercent(94);
       if (images) {
-        addLog('Ultra-HD 4096px Иконка сервера загружена через CDN Discord', 'success');
-        addLog('Ultra-HD 4096px Баннер сервера успешно применен', 'success');
+        addLog('Ultra-HD 4096px Иконка и баннер сервера успешно загружены', 'success');
       }
       if (settings) {
-        addLog('Настройки AFK-канала, верификации и системных уведомлений применены', 'success');
+        addLog('Настройки AFK, системных уведомлений и верификации применены', 'success');
       }
       await new Promise(r => setTimeout(r, 400));
     }
 
+    const durationSec = Number(((Date.now() - startedTime) / 1000).toFixed(1));
     setProgressPercent(100);
-    setProgressStep('Клонирование успешно завершено!');
-    addLog('Готово! Сервер скопирован 1:1. Все структуры идентичны.', 'success');
+    setProgressStep('Все задачи завершены и верифицированы!');
+    addLog(`Клонирование успешно завершено за ${durationSec} сек.`, 'success');
     setIsCloning(false);
-    showToast('Сервер успешно скопирован 1:1!');
+    showToast('Сервер полностью скопирован и проверен!');
+
+    setAuditReport({
+      rolesExpected: 4,
+      rolesCreated: rolesCreatedCount,
+      channelsExpected: 8,
+      channelsCreated: channelsCreatedCount,
+      channelsVerified: channelsCreatedCount,
+      emojisExpected: 4,
+      emojisCreated: emojisCreatedCount,
+      settingsApplied: settings,
+      durationSec
+    });
   };
 
   const copyLogToClipboard = () => {
@@ -241,18 +362,20 @@ export function DiscordPluginSimulator() {
             <h2 className="text-base font-bold text-white flex items-center gap-2">
               Интерактивный симулятор плагина
               <span className="text-[11px] font-semibold text-[#23a55a] bg-[#23a55a]/15 px-2 py-0.5 rounded">
-                Live Preview
+                Rate-Limit Safe
+              </span>
+              <span className="text-[11px] font-semibold text-[#5865f2] bg-[#5865f2]/15 px-2 py-0.5 rounded">
+                Верификация 100%
               </span>
             </h2>
             <p className="text-xs text-[#949ba4]">
-              Протестируйте обновленный дизайн настроек прямо в браузере перед установкой в клиент
+              Проверьте работу адаптивных пауз, обхода 429 и двухфазной сверки созданных каналов
             </p>
           </div>
         </div>
 
         {/* Client Mode & Theme Switcher */}
         <div className="flex items-center gap-3">
-          {/* Client Switcher */}
           <div className="flex items-center p-1 bg-[#1e1f22] rounded-lg border border-[#3f4147]/40 text-xs font-semibold">
             <button
               onClick={() => setClientType('vencord')}
@@ -276,7 +399,6 @@ export function DiscordPluginSimulator() {
             </button>
           </div>
 
-          {/* Theme preview mode */}
           <div className="flex items-center p-1 bg-[#1e1f22] rounded-lg border border-[#3f4147]/40 text-xs font-semibold">
             <button
               onClick={() => setThemeMode('dark')}
@@ -302,7 +424,6 @@ export function DiscordPluginSimulator() {
       <div className={`rounded-2xl border border-[#3f4147]/70 shadow-2xl overflow-hidden transition-colors ${
         themeMode === 'midnight' ? 'bg-[#111214]' : 'bg-[#313338]'
       }`}>
-        {/* Discord Client Window Header Bar */}
         <div className="bg-[#1e1f22] px-4 py-3 border-b border-[#3f4147]/40 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-1.5">
@@ -311,12 +432,12 @@ export function DiscordPluginSimulator() {
               <span className="w-3 h-3 rounded-full bg-[#3ba55d]" />
             </div>
             <span className="text-xs font-bold text-[#949ba4] tracking-wide ml-2">
-              DISCORD SETTINGS / НАСТРОЙКИ ПЛАГИНА
+              DISCORD SETTINGS / SERVER CLONER PRO
             </span>
           </div>
           <div className="flex items-center gap-2 text-xs text-[#949ba4]">
-            <span className="bg-[#2b2d31] px-2 py-0.5 rounded text-[11px] font-mono">
-              v1.2.0-pro
+            <span className="bg-[#23a55a]/15 text-[#23a55a] px-2 py-0.5 rounded text-[11px] font-mono font-semibold">
+              v1.3.0-safe
             </span>
             <span className="text-[#dbdee1] font-medium">
               {clientType === 'vencord' ? 'Vencord UserPlugin' : 'BetterDiscord Plugin'}
@@ -324,9 +445,8 @@ export function DiscordPluginSimulator() {
           </div>
         </div>
 
-        {/* Plugin Settings Content (Simulating inside Discord modal) */}
         <div className="p-6 md:p-8 flex flex-col gap-6 max-w-4xl mx-auto">
-          {/* Header Card with Gradient Accent */}
+          {/* Header Card */}
           <div className="bg-gradient-to-r from-[#5865f2]/15 via-[#5865f2]/5 to-[#23a55a]/10 border border-[#5865f2]/30 rounded-xl p-5 flex flex-wrap items-center justify-between gap-4">
             <div>
               <div className="flex items-center gap-2.5">
@@ -337,15 +457,14 @@ export function DiscordPluginSimulator() {
                   {clientType.toUpperCase()}
                 </span>
                 <span className="text-xs text-[#23a55a] font-medium flex items-center gap-1 bg-[#23a55a]/10 px-2 py-0.5 rounded-full border border-[#23a55a]/20">
-                  <Check className="w-3 h-3" /> Без прав админа на источнике
+                  <Check className="w-3 h-3" /> Rate-Limit Safe & Verification
                 </span>
               </div>
               <p className="text-xs text-[#949ba4] mt-1.5 max-w-xl">
-                Копирует структуру сервера 1:1: роли, каналы, точные права доступа, эмодзи, оформление и системные настройки через внутренний клиентский Rest API Discord.
+                Защита от 429 рейтлимитов, Pre-flight аудит прав/лимитов, пропуск бот-ролей и двухфазная верификация всех скопированных каналов.
               </p>
             </div>
 
-            {/* Quick Presets */}
             <div className="flex items-center gap-1.5 bg-[#1e1f22]/80 p-1.5 rounded-lg border border-white/5">
               <span className="text-[11px] font-semibold text-[#949ba4] px-2">Пресеты:</span>
               <button
@@ -374,7 +493,6 @@ export function DiscordPluginSimulator() {
 
           {/* Server Selector Cards */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Source Guild Card */}
             <div className="bg-[#2b2d31] border border-[#3f4147]/70 rounded-xl p-4 flex flex-col gap-3">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold uppercase tracking-wider text-[#949ba4] flex items-center gap-1.5">
@@ -415,7 +533,6 @@ export function DiscordPluginSimulator() {
               )}
             </div>
 
-            {/* Target Guild Card */}
             <div className="bg-[#2b2d31] border border-[#3f4147]/70 rounded-xl p-4 flex flex-col gap-3">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold uppercase tracking-wider text-[#949ba4] flex items-center gap-1.5">
@@ -450,17 +567,17 @@ export function DiscordPluginSimulator() {
                 <div className="flex items-center gap-3 pt-1 border-t border-[#3f4147]/40 text-xs text-[#949ba4]">
                   <span>Участников: <strong className="text-white">{dstGuild.memberCount}</strong></span>
                   <span>·</span>
-                  <span className="text-[#f0b232]">Все роли и каналы будут созданы с нуля</span>
+                  <span className="text-[#23a55a]">Pre-flight проверка активна</span>
                 </div>
               )}
             </div>
           </div>
 
-          {/* Options Toggles Grid */}
+          {/* Options Toggles */}
           <div>
             <div className="flex items-center justify-between mb-3">
               <span className="text-xs font-bold uppercase tracking-wider text-[#949ba4]">
-                Параметры клонирования элементов
+                Параметры и безопасность
               </span>
               <span className="text-xs text-[#949ba4]">
                 Кликните на карточку для переключения
@@ -468,7 +585,6 @@ export function DiscordPluginSimulator() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-              {/* Option 1: Roles */}
               <div
                 onClick={() => !isCloning && setRoles(!roles)}
                 className={`flex items-center justify-between p-3.5 rounded-xl border transition-all cursor-pointer select-none ${
@@ -485,10 +601,9 @@ export function DiscordPluginSimulator() {
                   </div>
                   <div>
                     <h3 className="text-sm font-semibold text-white">Роли и права доступа</h3>
-                    <p className="text-xs text-[#949ba4]">Цвета, иерархия, @everyone, hoist и полные разрешения</p>
+                    <p className="text-xs text-[#949ba4]">Исключение бот-ролей, сохранение цветов и иерархии</p>
                   </div>
                 </div>
-                {/* Switch knob */}
                 <div className={`w-11 h-6 rounded-full relative transition-colors duration-200 shrink-0 ${
                   roles ? 'bg-[#23a55a]' : 'bg-[#4e5058]'
                 }`}>
@@ -498,7 +613,6 @@ export function DiscordPluginSimulator() {
                 </div>
               </div>
 
-              {/* Option 2: Channels */}
               <div
                 onClick={() => !isCloning && setChannels(!channels)}
                 className={`flex items-center justify-between p-3.5 rounded-xl border transition-all cursor-pointer select-none ${
@@ -514,8 +628,8 @@ export function DiscordPluginSimulator() {
                     <FolderTree className="w-4 h-4" />
                   </div>
                   <div>
-                    <h3 className="text-sm font-semibold text-white">Каналы и категории</h3>
-                    <p className="text-xs text-[#949ba4]">Текстовые, войсы, форумы, slowmode, bitrate и overwrites</p>
+                    <h3 className="text-sm font-semibold text-white">Каналы и верификация</h3>
+                    <p className="text-xs text-[#949ba4]">Двухфазное создание категорий + аудит целостности</p>
                   </div>
                 </div>
                 <div className={`w-11 h-6 rounded-full relative transition-colors duration-200 shrink-0 ${
@@ -527,7 +641,6 @@ export function DiscordPluginSimulator() {
                 </div>
               </div>
 
-              {/* Option 3: Emojis */}
               <div
                 onClick={() => !isCloning && setEmojis(!emojis)}
                 className={`flex items-center justify-between p-3.5 rounded-xl border transition-all cursor-pointer select-none ${
@@ -544,7 +657,7 @@ export function DiscordPluginSimulator() {
                   </div>
                   <div>
                     <h3 className="text-sm font-semibold text-white">Пользовательские эмодзи</h3>
-                    <p className="text-xs text-[#949ba4]">Статичные (.png) и анимированные (.gif) эмодзи в оригинале</p>
+                    <p className="text-xs text-[#949ba4]">Lossless перенос с адаптивными паузами</p>
                   </div>
                 </div>
                 <div className={`w-11 h-6 rounded-full relative transition-colors duration-200 shrink-0 ${
@@ -556,7 +669,6 @@ export function DiscordPluginSimulator() {
                 </div>
               </div>
 
-              {/* Option 4: Settings */}
               <div
                 onClick={() => !isCloning && setSettings(!settings)}
                 className={`flex items-center justify-between p-3.5 rounded-xl border transition-all cursor-pointer select-none ${
@@ -573,7 +685,7 @@ export function DiscordPluginSimulator() {
                   </div>
                   <div>
                     <h3 className="text-sm font-semibold text-white">Основные настройки</h3>
-                    <p className="text-xs text-[#949ba4]">Название, AFK-таймаут, системные каналы и верификация</p>
+                    <p className="text-xs text-[#949ba4]">AFK-таймаут, системные каналы и верификация</p>
                   </div>
                 </div>
                 <div className={`w-11 h-6 rounded-full relative transition-colors duration-200 shrink-0 ${
@@ -585,7 +697,6 @@ export function DiscordPluginSimulator() {
                 </div>
               </div>
 
-              {/* Option 5: Images */}
               <div
                 onClick={() => !isCloning && setImages(!images)}
                 className={`flex items-center justify-between p-3.5 rounded-xl border transition-all cursor-pointer select-none ${
@@ -614,60 +725,72 @@ export function DiscordPluginSimulator() {
                 </div>
               </div>
 
-              {/* Option 6: User Overwrites */}
               <div
-                onClick={() => !isCloning && setUserOW(!userOW)}
+                onClick={() => !isCloning && setSkipDuplicates(!skipDuplicates)}
                 className={`flex items-center justify-between p-3.5 rounded-xl border transition-all cursor-pointer select-none ${
-                  userOW
+                  skipDuplicates
                     ? 'bg-[#2b2d31] border-[#5865f2]/40 shadow-sm'
                     : 'bg-[#2b2d31]/60 border-[#3f4147]/40 opacity-75 hover:opacity-100'
                 }`}
               >
                 <div className="flex items-center gap-3 min-w-0 pr-3">
                   <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
-                    userOW ? 'bg-[#5865f2]/20 text-[#5865f2]' : 'bg-white/5 text-[#949ba4]'
+                    skipDuplicates ? 'bg-[#5865f2]/20 text-[#5865f2]' : 'bg-white/5 text-[#949ba4]'
                   }`}>
-                    <UserCheck className="w-4 h-4" />
+                    <Zap className="w-4 h-4" />
                   </div>
                   <div>
-                    <h3 className="text-sm font-semibold text-white">Индивидуальные overwrites юзеров</h3>
-                    <p className="text-xs text-[#949ba4]">Персональные доступы конкретных пользователей (медленнее)</p>
+                    <h3 className="text-sm font-semibold text-white">Пропускать дубликаты</h3>
+                    <p className="text-xs text-[#949ba4]">Не создавать повторно уже существующие роли/эмодзи</p>
                   </div>
                 </div>
                 <div className={`w-11 h-6 rounded-full relative transition-colors duration-200 shrink-0 ${
-                  userOW ? 'bg-[#23a55a]' : 'bg-[#4e5058]'
+                  skipDuplicates ? 'bg-[#23a55a]' : 'bg-[#4e5058]'
                 }`}>
                   <div className={`w-4 h-4 rounded-full bg-white shadow absolute top-1 transition-all duration-200 ${
-                    userOW ? 'left-6' : 'left-1'
+                    skipDuplicates ? 'left-6' : 'left-1'
                   }`} />
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Action Trigger & Progress Bar */}
+          {/* Action Trigger, Abort & Progress */}
           <div className="flex flex-col gap-3">
-            <button
-              onClick={handleStartClone}
-              disabled={isCloning}
-              className={`w-full py-3.5 px-6 rounded-xl font-bold text-sm flex items-center justify-center gap-2.5 transition-all shadow-lg ${
-                isCloning
-                  ? 'bg-[#4e5058] text-[#949ba4] cursor-not-allowed'
-                  : 'bg-[#5865f2] hover:bg-[#4752c4] active:bg-[#3c45a5] text-white shadow-[#5865f2]/25'
-              }`}
-            >
-              {isCloning ? (
-                <>
-                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  <span>Клонирование в процессе...</span>
-                </>
-              ) : (
-                <>
-                  <Play className="w-4 h-4 fill-white" />
-                  <span>Запустить клонирование сервера</span>
-                </>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleStartClone}
+                disabled={isCloning}
+                className={`flex-1 py-3.5 px-6 rounded-xl font-bold text-sm flex items-center justify-center gap-2.5 transition-all shadow-lg ${
+                  isCloning
+                    ? 'bg-[#4e5058] text-[#949ba4] cursor-not-allowed'
+                    : 'bg-[#5865f2] hover:bg-[#4752c4] active:bg-[#3c45a5] text-white shadow-[#5865f2]/25'
+                }`}
+              >
+                {isCloning ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    <span>Клонирование и проверка в процессе...</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-4 h-4 fill-white" />
+                    <span>Запустить клонирование с верификацией</span>
+                  </>
+                )}
+              </button>
+
+              {isCloning && (
+                <button
+                  onClick={handleAbort}
+                  className="py-3.5 px-5 bg-[#da373c] hover:bg-[#a1282c] text-white rounded-xl font-bold text-sm flex items-center gap-2 transition-colors shadow-lg"
+                  title="Остановить процесс"
+                >
+                  <Square className="w-4 h-4 fill-white" />
+                  <span>Остановить</span>
+                </button>
               )}
-            </button>
+            </div>
 
             {/* Live Progress Bar */}
             {(isCloning || progressPercent > 0) && (
@@ -693,11 +816,51 @@ export function DiscordPluginSimulator() {
                 </div>
               </div>
             )}
+
+            {/* Audit Summary Card */}
+            {auditReport && (
+              <div className="bg-[#23a55a]/10 border border-[#23a55a]/30 rounded-xl p-4 flex flex-col gap-2.5 animate-fadeIn">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-sm font-bold text-[#23a55a]">
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Отчет об аудите целостности (100% Верифицировано)</span>
+                  </div>
+                  <div className="flex items-center gap-1 text-xs text-[#949ba4] font-mono">
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>{auditReport.durationSec}s</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs pt-1 border-t border-[#23a55a]/20">
+                  <div className="bg-[#1e1f22]/60 p-2.5 rounded-lg border border-white/5">
+                    <span className="text-[#949ba4] block text-[11px]">Роли</span>
+                    <strong className="text-white text-sm">
+                      {auditReport.rolesCreated}/{auditReport.rolesExpected}
+                    </strong>
+                  </div>
+                  <div className="bg-[#1e1f22]/60 p-2.5 rounded-lg border border-white/5">
+                    <span className="text-[#949ba4] block text-[11px]">Каналы (Аудит)</span>
+                    <strong className="text-white text-sm">
+                      {auditReport.channelsVerified}/{auditReport.channelsExpected}
+                    </strong>
+                  </div>
+                  <div className="bg-[#1e1f22]/60 p-2.5 rounded-lg border border-white/5">
+                    <span className="text-[#949ba4] block text-[11px]">Эмодзи</span>
+                    <strong className="text-white text-sm">
+                      {auditReport.emojisCreated}/{auditReport.emojisExpected}
+                    </strong>
+                  </div>
+                  <div className="bg-[#1e1f22]/60 p-2.5 rounded-lg border border-white/5">
+                    <span className="text-[#949ba4] block text-[11px]">Настройки</span>
+                    <strong className="text-[#23a55a] text-sm">Применены</strong>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Terminal Console View */}
           <div className="bg-[#1e1f22] border border-[#3f4147]/70 rounded-xl overflow-hidden flex flex-col shadow-inner">
-            {/* Console Toolbar */}
             <div className="bg-[#232428] px-4 py-2.5 border-b border-[#3f4147]/40 flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2.5">
                 <Terminal className="w-4 h-4 text-[#5865f2]" />
@@ -709,7 +872,6 @@ export function DiscordPluginSimulator() {
                 </span>
               </div>
 
-              {/* Log filter pills & actions */}
               <div className="flex items-center gap-2">
                 <div className="flex items-center gap-1 text-[11px] font-semibold">
                   <button
@@ -727,6 +889,14 @@ export function DiscordPluginSimulator() {
                     }`}
                   >
                     Успех
+                  </button>
+                  <button
+                    onClick={() => setFilterTag('warn')}
+                    className={`px-2 py-0.5 rounded ${
+                      filterTag === 'warn' ? 'bg-[#f0b232] text-black font-bold' : 'text-[#949ba4] hover:text-white'
+                    }`}
+                  >
+                    429/Предупр
                   </button>
                   <button
                     onClick={() => setFilterTag('error')}
@@ -762,15 +932,10 @@ export function DiscordPluginSimulator() {
               </div>
             </div>
 
-            {/* Console Output Body */}
             <div className="p-4 max-h-64 min-h-[160px] overflow-y-auto font-mono text-xs flex flex-col gap-1.5 leading-relaxed">
               {filteredLogs.length === 0 ? (
                 <div className="text-[#949ba4] italic text-center py-8">
-                  Здесь будут отображаться пошаговые события создания ролей, каналов и эмодзи.
-                  <br />
-                  <span className="text-[11px] text-[#5865f2] not-italic mt-1 block">
-                    Нажмите «Запустить клонирование сервера» выше для демонстрации работы.
-                  </span>
+                  Журнал готов. Нажмите «Запустить клонирование с верификацией».
                 </div>
               ) : (
                 filteredLogs.map(l => (

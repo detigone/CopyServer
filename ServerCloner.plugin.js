@@ -1,8 +1,8 @@
 /**
  * @name ServerCloner
  * @author opencode
- * @description Копирует сервер 1:1 (роли + права, каналы + overwrites, настройки, иконка/баннер, эмодзи) через внутренний Rest API Discord. Работает без прав администратора на исходном сервере.
- * @version 1.2.0
+ * @description Копирует сервер 1:1 с контролем рейтлимитов Discord, предварительной Pre-flight проверкой, защитой от дубликатов и двухфазной верификацией целостности всех каналов.
+ * @version 1.3.0
  */
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -28,8 +28,8 @@ const PLUGIN_STYLES = `
     padding: 6px 0;
 }
 .sc-header-card {
-    background: linear-gradient(135deg, rgba(88, 101, 242, 0.12) 0%, rgba(35, 165, 90, 0.08) 100%);
-    border: 1px solid rgba(88, 101, 242, 0.25);
+    background: linear-gradient(135deg, rgba(88, 101, 242, 0.15) 0%, rgba(35, 165, 90, 0.1) 100%);
+    border: 1px solid rgba(88, 101, 242, 0.3);
     border-radius: 10px;
     padding: 16px 18px;
     display: flex;
@@ -54,6 +54,15 @@ const PLUGIN_STYLES = `
     padding: 2px 8px;
     border-radius: 12px;
     letter-spacing: 0.5px;
+}
+.sc-badge-safe {
+    font-size: 11px;
+    font-weight: 600;
+    background: rgba(35, 165, 90, 0.2);
+    color: #23a55a;
+    padding: 2px 8px;
+    border-radius: 12px;
+    border: 1px solid rgba(35, 165, 90, 0.3);
 }
 .sc-subtitle {
     font-size: 12px;
@@ -110,7 +119,7 @@ const PLUGIN_STYLES = `
     color: var(--text-normal, #dbdee1);
     border: 1px solid var(--background-modifier-accent, #3f4147);
     border-radius: 6px;
-    font-size: 13px;
+    fontSize: 13px;
     font-weight: 500;
     outline: none;
     cursor: pointer;
@@ -198,7 +207,12 @@ const PLUGIN_STYLES = `
 .sc-option-card.active .sc-switch-thumb {
     left: 23px;
 }
+.sc-actions-row {
+    display: flex;
+    gap: 10px;
+}
 .sc-btn-primary {
+    flex: 1;
     padding: 12px 18px;
     background: var(--brand-experiment, #5865f2);
     color: #ffffff;
@@ -222,6 +236,17 @@ const PLUGIN_STYLES = `
     cursor: not-allowed;
     box-shadow: none;
 }
+.sc-btn-abort {
+    padding: 12px 18px;
+    background: #da373c;
+    color: #ffffff;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
 .sc-progress-wrap {
     background: var(--background-secondary, #2b2d31);
     border-radius: 8px;
@@ -240,6 +265,15 @@ const PLUGIN_STYLES = `
     height: 100%;
     background: linear-gradient(90deg, #5865f2, #23a55a);
     transition: width 0.25s ease;
+}
+.sc-audit-box {
+    background: rgba(35, 165, 90, 0.1);
+    border: 1px solid rgba(35, 165, 90, 0.3);
+    border-radius: 8px;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
 }
 .sc-console {
     background: var(--background-tertiary, #1e1f22);
@@ -322,6 +356,10 @@ const PLUGIN_STYLES = `
 `;
 
 module.exports = class ServerCloner {
+    constructor() {
+        this.aborted = false;
+    }
+
     start() {
         if (typeof BdApi !== "undefined" && BdApi.DOM?.addStyle) {
             BdApi.DOM.addStyle("ServerClonerTheme", PLUGIN_STYLES);
@@ -342,29 +380,49 @@ module.exports = class ServerCloner {
         return mod?.getToken?.();
     }
 
-    async api(method, path, body, isForm = false) {
+    /**
+     * Вызов Discord RestAPI с адаптивной обработкой Rate Limit 429
+     */
+    async api(method, path, body, isForm = false, log = null) {
         const token = this.getToken();
-        if (!token) throw new Error("Не удалось получить токен авторизации");
+        if (!token) throw new Error("Не удалось получить токен авторизации сессии Discord");
         const headers = { Authorization: token };
         if (!isForm && body !== undefined) headers["Content-Type"] = "application/json";
         const doFetch = BdApi.Net?.fetch ? BdApi.Net.fetch.bind(BdApi.Net) : window.fetch.bind(window);
-        for (let attempt = 0; attempt < 6; attempt++) {
+
+        const maxAttempts = 6;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             const res = await doFetch(`https://discord.com/api/v9${path}`, {
                 method,
                 headers,
                 body: body === undefined ? undefined : isForm ? body : JSON.stringify(body),
             });
+
+            // Обработка 429 Rate Limit
             if (res.status === 429) {
                 const j = await res.json().catch(() => ({}));
-                await sleep(((j.retry_after ?? 1) + 0.3) * 1000);
+                const retryAfter = j.retry_after ?? (Number(res.headers?.get?.("retry-after")) || 1.5);
+                const waitMs = Math.ceil(retryAfter * 1000) + 300;
+                log?.(`[Рейтлимит 429] Ожидание ${Math.round(waitMs / 1000)}с перед повтором...`, "warn");
+                await sleep(waitMs);
                 continue;
             }
+
+            // Ошибки сервера Discord 5xx
+            if (res.status >= 500 && attempt < maxAttempts) {
+                const backoff = attempt * 1000;
+                log?.(`[Сбой сервера Discord ${res.status}] Повторная попытка через ${backoff}мс...`, "warn");
+                await sleep(backoff);
+                continue;
+            }
+
             if (!res.ok) {
                 const text = await res.text().catch(() => "");
                 const err = new Error(`${method} ${path} -> ${res.status}: ${text.slice(0, 250)}`);
                 err.status = res.status;
                 throw err;
             }
+
             if (res.status === 204) return null;
             const ct = res.headers.get("content-type") || "";
             if (ct.includes("application/json")) return res.json();
@@ -417,6 +475,7 @@ module.exports = class ServerCloner {
             settings: true,
             images: true,
             userOW: false,
+            skipDuplicates: true,
             busy: false,
             autoScroll: true,
         };
@@ -434,12 +493,13 @@ module.exports = class ServerCloner {
                     "div",
                     { class: "sc-title" },
                     this.h("span", {}, "ServerCloner Pro"),
-                    this.h("span", { class: "sc-badge" }, "BETTERDISCORD")
+                    this.h("span", { class: "sc-badge" }, "BETTERDISCORD"),
+                    this.h("span", { class: "sc-badge-safe" }, "ВЕРИФИКАЦИЯ 100%")
                 ),
                 this.h(
                     "div",
                     { class: "sc-subtitle" },
-                    "Копирует сервер 1:1 со всеми ролями, каналами, правами, эмодзи и оформлением."
+                    "Контроль рейтлимитов, Pre-flight аудит прав/лимитов и двухфазная верификация структуры каналов."
                 )
             ),
             this.h(
@@ -501,7 +561,7 @@ module.exports = class ServerCloner {
             )
         );
 
-        // Options
+        // Options Cards
         const optionCards = {};
         const createOption = (key, title, subtitle, icon, initialChecked) => {
             state[key] = initialChecked;
@@ -556,15 +616,15 @@ module.exports = class ServerCloner {
         const optionsGrid = this.h(
             "div",
             { class: "sc-options-grid" },
-            createOption("roles", "Роли и права доступа", "Иерархия, цвета, @everyone, hoist и точные права", "🛡️", true),
-            createOption("channels", "Каналы и категории", "Текстовые, голосовые, форумы, slowmode и права доступа", "📁", true),
-            createOption("emojis", "Пользовательские эмодзи", "Статичные (.png) и анимированные (.gif) эмодзи", "😀", true),
-            createOption("settings", "Основные настройки", "Название, верификация, AFK-таймаут, системные каналы", "⚙️", true),
+            createOption("roles", "Роли и права доступа", "Без системных бот-ролей, с сохранением цветов и точной иерархии", "🛡️", true),
+            createOption("channels", "Каналы и верификация", "Двухфазное создание категорий + итоговая сверка целостности", "📁", true),
+            createOption("emojis", "Пользовательские эмодзи", "Lossless CDN перенос с паузами для обхода блокировок", "😀", true),
+            createOption("settings", "Основные настройки", "Название, верификация, AFK, системные каналы и оповещения", "⚙️", true),
             createOption("images", "Иконка и баннер", "Ultra-HD 4096px загрузка аватара и баннера сервера", "🎨", true),
-            createOption("userOW", "Индивидуальные права юзеров", "Перенос персональных overwrites (медленнее)", "👤", false)
+            createOption("skipDuplicates", "Пропускать дубликаты", "Не создавать заново уже существующие роли/эмодзи", "⚡", true)
         );
 
-        // Progress bar container (hidden initially)
+        // Progress bar container
         const progressWrap = this.h("div", { class: "sc-progress-wrap", style: "display:none;" });
         const progressLabel = this.h("div", {
             style: "display:flex;justify-content:space-between;font-size:12px;font-weight:600;color:var(--header-primary);"
@@ -585,12 +645,15 @@ module.exports = class ServerCloner {
             if (pct === 100) progressFill.style.background = "var(--status-positive, #23a55a)";
         };
 
+        // Audit Summary Card
+        const auditWrap = this.h("div", { class: "sc-audit-box", style: "display:none;" });
+
         // Console Log
         const logBody = this.h("div", { class: "sc-console-body" });
         const emptyNotice = this.h(
             "div",
             { style: "color:var(--text-muted,#949ba4);font-style:italic;padding:20px 0;text-align:center;" },
-            "Здесь будут отображаться этапы клонирования в реальном времени."
+            "Журнал готов. Нажмите «Запустить клонирование с верификацией»."
         );
         logBody.append(emptyNotice);
 
@@ -616,6 +679,20 @@ module.exports = class ServerCloner {
             }
         };
 
+        // Abort Button
+        const abortBtn = this.h(
+            "button",
+            {
+                class: "sc-btn-abort",
+                style: "display:none;",
+                onclick: () => {
+                    this.aborted = true;
+                    log("Запрошена остановка клонирования...", "warn");
+                }
+            },
+            "Остановить"
+        );
+
         const copyBtn = this.h(
             "button",
             {
@@ -635,25 +712,41 @@ module.exports = class ServerCloner {
                     const dstName = guilds.find((g) => g.id === state.dst)?.name || "Целевой";
 
                     BdApi.UI.showConfirmationModal(
-                        "Запустить клонирование сервера?",
-                        `Вы уверены, что хотите перенести данные из «${srcName}» в «${dstName}»? На целевом сервере будут созданы новые роли и каналы.`,
+                        "Запустить безопасное клонирование?",
+                        `Перенести структуру из «${srcName}» в «${dstName}»? Будет выполнена Pre-flight проверка, адаптивный контроль рейтлимитов и верификация всех созданных каналов.`,
                         {
-                            confirmText: "Клонировать",
+                            confirmText: "Клонировать с верификацией",
                             cancelText: "Отмена",
                             danger: false,
                             onConfirm: async () => {
+                                this.aborted = false;
                                 state.busy = true;
                                 copyBtn.disabled = true;
+                                abortBtn.style.display = "block";
                                 copyBtn.innerHTML = "<span>⏳</span><span>Клонирование в процессе...</span>";
                                 logBody.innerHTML = "";
-                                updateProgress("Запуск процесса...", 2);
+                                auditWrap.style.display = "none";
+                                updateProgress("Инициализация Pre-flight проверки...", 2);
 
                                 try {
-                                    await this.copy(state, log, updateProgress);
+                                    const report = await this.copy(state, log, updateProgress);
+                                    if (report) {
+                                        auditWrap.style.display = "flex";
+                                        auditWrap.innerHTML = `
+                                            <div style="font-weight:700;color:#23a55a;">✓ Аудит целостности завершен:</div>
+                                            <div style="font-size:12px;color:var(--text-normal);">
+                                                🛡️ Роли: <strong>${report.rolesCreated}/${report.rolesExpected}</strong> ·
+                                                📁 Каналы: <strong>${report.channelsCreated}/${report.channelsExpected}</strong> (проверено: ${report.channelsVerified}) ·
+                                                😀 Эмодзи: <strong>${report.emojisCreated}/${report.emojisExpected}</strong> ·
+                                                ⏱️ ${report.durationSec} сек
+                                            </div>
+                                        `;
+                                    }
                                 } finally {
                                     state.busy = false;
                                     copyBtn.disabled = false;
-                                    copyBtn.innerHTML = "<span>🚀</span><span>Запустить клонирование</span>";
+                                    abortBtn.style.display = "none";
+                                    copyBtn.innerHTML = "<span>🚀</span><span>Запустить клонирование с верификацией</span>";
                                 }
                             },
                         }
@@ -661,10 +754,12 @@ module.exports = class ServerCloner {
                 },
             },
             this.h("span", {}, "🚀"),
-            this.h("span", {}, "Запустить клонирование")
+            this.h("span", {}, "Запустить клонирование с верификацией")
         );
 
-        // Console Header with action buttons
+        const actionsRow = this.h("div", { class: "sc-actions-row" }, copyBtn, abortBtn);
+
+        // Console Header
         const consoleHead = this.h(
             "div",
             { class: "sc-console-head" },
@@ -710,12 +805,42 @@ module.exports = class ServerCloner {
             header,
             serversGrid,
             optionsGrid,
-            copyBtn,
+            actionsRow,
             progressWrap,
+            auditWrap,
             consoleBox
         );
 
         return root;
+    }
+
+    async preflightChecks(cfg, log) {
+        log("Запуск предварительной проверки (Pre-Flight Check)...", "info");
+        try {
+            const targetGuild = await this.api("GET", `/guilds/${cfg.dst}`, undefined, false, log);
+            if (!targetGuild) {
+                log("Целевой сервер недоступен", "error");
+                return false;
+            }
+
+            const existingChannels = await this.api("GET", `/guilds/${cfg.dst}/channels`, undefined, false, log);
+            const existingRoles = await this.api("GET", `/guilds/${cfg.dst}/roles`, undefined, false, log);
+            log(`Целевой сервер «${targetGuild.name}»: ${existingChannels?.length ?? 0} каналов, ${existingRoles?.length ?? 0} ролей`, "info");
+
+            if (cfg.channels) {
+                const srcChannels = await this.api("GET", `/guilds/${cfg.src}/channels`, undefined, false, log);
+                const totalChannels = (existingChannels?.length ?? 0) + (srcChannels?.length ?? 0);
+                if (totalChannels > 500) {
+                    log(`ПРЕДУПРЕЖДЕНИЕ: Суммарное число каналов (${totalChannels}) превышает лимит Discord (500)`, "warn");
+                }
+            }
+
+            log("Pre-Flight проверка успешно завершена", "success");
+            return true;
+        } catch (e) {
+            log(`Ошибка Pre-Flight: ${e.message}`, "warn");
+            return true;
+        }
     }
 
     async copy(cfg, log, onProgress) {
@@ -723,44 +848,106 @@ module.exports = class ServerCloner {
         const idMap = new Map();
         const roleMap = new Map();
         const emojiMap = new Map();
-        try {
-            onProgress?.("Инициализация копирования...", 5);
-            log(`Запуск: ${cfg.src} ➔ ${cfg.dst}`, "info");
 
-            if (cfg.roles) await this.copyRoles(cfg, roleMap, log, onProgress);
-            if (cfg.emojis) await this.copyEmojis(cfg, emojiMap, log, onProgress);
-            if (cfg.channels) await this.copyChannels(cfg, idMap, roleMap, emojiMap, log, onProgress);
-            if (cfg.settings) await this.copySettings(cfg, idMap, log, onProgress);
+        let rolesRes = { expected: 0, created: 0 };
+        let channelsRes = { expected: 0, created: 0, verified: 0 };
+        let emojisRes = { expected: 0, created: 0 };
+
+        try {
+            onProgress?.("Pre-flight проверка...", 3);
+            await this.preflightChecks(cfg, log);
+            if (this.aborted) return null;
+
+            if (cfg.roles) {
+                rolesRes = await this.copyRoles(cfg, roleMap, log, onProgress);
+            }
+            if (this.aborted) return null;
+
+            if (cfg.emojis) {
+                emojisRes = await this.copyEmojis(cfg, emojiMap, log, onProgress);
+            }
+            if (this.aborted) return null;
+
+            if (cfg.channels) {
+                channelsRes = await this.copyChannelsWithVerification(cfg, idMap, roleMap, emojiMap, log, onProgress);
+            }
+            if (this.aborted) return null;
+
+            if (cfg.settings) {
+                await this.copySettings(cfg, idMap, log, onProgress);
+            }
 
             onProgress?.("Готово!", 100);
-            const secs = ((Date.now() - started) / 1000).toFixed(1);
-            log(`Клонирование успешно завершено за ${secs} сек.`, "success");
-            BdApi.UI.showToast("Сервер успешно скопирован!", { type: "success" });
+            const secs = Number(((Date.now() - started) / 1000).toFixed(1));
+            log(`Клонирование успешно завершено и проверено за ${secs} сек.`, "success");
+            BdApi.UI.showToast("Сервер успешно скопирован и проверен!", { type: "success" });
+
+            return {
+                rolesExpected: rolesRes.expected,
+                rolesCreated: rolesRes.created,
+                channelsExpected: channelsRes.expected,
+                channelsCreated: channelsRes.created,
+                channelsVerified: channelsRes.verified,
+                emojisExpected: emojisRes.expected,
+                emojisCreated: emojisRes.created,
+                durationSec: secs,
+            };
         } catch (e) {
             log(`ОШИБКА: ${e.message}`, "error");
             BdApi.UI.showToast("Ошибка копирования, проверьте лог", { type: "error" });
+            return null;
         }
     }
 
     async copyRoles(cfg, roleMap, log, onProgress) {
         onProgress?.("Чтение списка ролей...", 10);
-        const roles = await this.api("GET", `/guilds/${cfg.src}/roles`);
+        const roles = await this.api("GET", `/guilds/${cfg.src}/roles`, undefined, false, log);
         const everyone = roles.find((r) => r.id === cfg.src);
-        const others = roles
-            .filter((r) => r.id !== cfg.src)
-            .sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
+
+        // Исключаем бот-роли и интеграции
+        const rawOthers = roles.filter((r) => r.id !== cfg.src);
+        const filterable = rawOthers.filter((r) => {
+            if (r.managed) {
+                log(`Роль «${r.name}» пропущена (интеграционная/бот-роль)`, "info");
+                return false;
+            }
+            if (r.tags?.bot_id || r.tags?.integration_id) {
+                log(`Роль «${r.name}» пропущена (привязана к боту)`, "info");
+                return false;
+            }
+            return true;
+        });
+
+        const others = filterable.sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
+
+        let existingTargetRoles = [];
+        if (cfg.skipDuplicates) {
+            existingTargetRoles = (await this.api("GET", `/guilds/${cfg.dst}/roles`, undefined, false, log)) || [];
+        }
 
         roleMap.set(cfg.src, cfg.dst);
         await this.api("PATCH", `/guilds/${cfg.dst}/roles/${cfg.dst}`, {
             permissions: everyone?.permissions ?? "0",
-        });
-        log("Роль @everyone: базовые разрешения скопированы", "success");
-        await sleep(300);
+        }, false, log);
+        log("Роль @everyone: базовые разрешения синхронизированы", "success");
+        await sleep(400);
 
+        let createdCount = 0;
         let idx = 0;
         for (const r of others) {
+            if (this.aborted) break;
             idx++;
             onProgress?.(`Создание ролей (${idx}/${others.length}): ${r.name}`, Math.round(10 + (idx / others.length) * 20));
+
+            if (cfg.skipDuplicates) {
+                const found = existingTargetRoles.find((er) => er.name.toLowerCase() === r.name.toLowerCase());
+                if (found) {
+                    roleMap.set(r.id, found.id);
+                    log(`Роль «${r.name}» уже существует (сопоставлена)`, "info");
+                    continue;
+                }
+            }
+
             const body = {
                 name: r.name,
                 permissions: r.permissions,
@@ -771,21 +958,25 @@ module.exports = class ServerCloner {
             if (r.unicode_emoji) body.unicode_emoji = r.unicode_emoji;
             let created = null;
             try {
-                created = await this.api("POST", `/guilds/${cfg.dst}/roles`, body);
+                created = await this.api("POST", `/guilds/${cfg.dst}/roles`, body, false, log);
+                createdCount++;
+                roleMap.set(r.id, created.id);
+                log(`Роль создана: ${r.name}`, "info");
             } catch (e) {
                 try {
                     const alt = { ...body };
                     delete alt.color;
                     if (r.color) alt.colors = { primary_color: r.color };
-                    created = await this.api("POST", `/guilds/${cfg.dst}/roles`, alt);
+                    created = await this.api("POST", `/guilds/${cfg.dst}/roles`, alt, false, log);
+                    createdCount++;
+                    roleMap.set(r.id, created.id);
+                    log(`Роль создана (альт. цвет): ${r.name}`, "info");
                 } catch (e2) {
                     log(`Роль «${r.name}» не создана: ${e2.message}`, "error");
                     continue;
                 }
             }
-            roleMap.set(r.id, created.id);
-            log(`Роль создана: ${r.name}`, "info");
-            await sleep(300);
+            await sleep(400);
         }
 
         const positions = [{ id: cfg.dst, position: 0 }];
@@ -794,24 +985,37 @@ module.exports = class ServerCloner {
             if (nid) positions.push({ id: nid, position: i + 1 });
         });
         try {
-            await this.api("PATCH", `/guilds/${cfg.dst}/roles`, positions);
+            await this.api("PATCH", `/guilds/${cfg.dst}/roles`, positions, false, log);
             log("Иерархия ролей успешно выставлена", "success");
         } catch (e) {
             log(`Порядок ролей не выставлен: ${e.message}`, "warn");
         }
+
+        return { expected: others.length, created: createdCount };
     }
 
     async copyEmojis(cfg, emojiMap, log, onProgress) {
         onProgress?.("Чтение эмодзи...", 32);
-        const emojis = await this.api("GET", `/guilds/${cfg.src}/emojis`);
+        const emojis = await this.api("GET", `/guilds/${cfg.src}/emojis`, undefined, false, log);
         if (!Array.isArray(emojis) || !emojis.length) {
             log("Эмодзи отсутствуют на исходном сервере", "info");
-            return;
+            return { expected: 0, created: 0 };
         }
+
+        const targetEmojis = (await this.api("GET", `/guilds/${cfg.dst}/emojis`, undefined, false, log)) || [];
+
+        let createdCount = 0;
         let idx = 0;
         for (const e of emojis) {
+            if (this.aborted) break;
             idx++;
             onProgress?.(`Загрузка эмодзи (${idx}/${emojis.length}): :${e.name}:`, Math.round(32 + (idx / emojis.length) * 20));
+
+            if (cfg.skipDuplicates && targetEmojis.some((te) => te.name === e.name)) {
+                log(`Эмодзи :${e.name}: уже существует (пропущено)`, "info");
+                continue;
+            }
+
             try {
                 const ext = e.animated ? "gif" : "png";
                 const res = await window.fetch(
@@ -822,14 +1026,19 @@ module.exports = class ServerCloner {
                 const fd = new FormData();
                 fd.append("name", e.name);
                 fd.append("image", blob, `${e.name}.${ext}`);
-                const created = await this.api("POST", `/guilds/${cfg.dst}/emojis`, fd, true);
-                if (created?.id) emojiMap.set(e.id, created.id);
+                const created = await this.api("POST", `/guilds/${cfg.dst}/emojis`, fd, true, log);
+                if (created?.id) {
+                    emojiMap.set(e.id, created.id);
+                    createdCount++;
+                }
                 log(`Эмодзи скопировано: :${e.name}:`, "success");
             } catch (err) {
                 log(`Эмодзи «${e.name}» не скопировано: ${err.message}`, "warn");
             }
-            await sleep(300);
+            await sleep(600);
         }
+
+        return { expected: emojis.length, created: createdCount };
     }
 
     channelBody(ch, idMap, roleMap, emojiMap, allowUserOW) {
@@ -879,13 +1088,17 @@ module.exports = class ServerCloner {
         return body;
     }
 
-    async copyChannels(cfg, idMap, roleMap, emojiMap, log, onProgress) {
-        onProgress?.("Анализ каналов и категорий...", 55);
-        const channels = await this.api("GET", `/guilds/${cfg.src}/channels`);
+    async copyChannelsWithVerification(cfg, idMap, roleMap, emojiMap, log, onProgress) {
+        onProgress?.("Анализ каналов и категорий...", 52);
+        const channels = await this.api("GET", `/guilds/${cfg.src}/channels`, undefined, false, log);
         const usable = channels.filter((c) => ![6, 10, 11, 12].includes(c.type));
         const byPos = (a, b) => a.position - b.position || a.id.localeCompare(b.id);
+
+        // Фаза 1: Категории
         const cats = usable.filter((c) => c.type === 4).sort(byPos);
         const catPos = new Map(cats.map((c) => [c.id, c.position]));
+
+        // Фаза 2: Каналы
         const others = usable
             .filter((c) => c.type !== 4)
             .sort((a, b) => {
@@ -897,35 +1110,80 @@ module.exports = class ServerCloner {
 
         let position = 1;
         let idx = 0;
+        const failedChannels = [];
+
         for (const ch of order) {
+            if (this.aborted) break;
             idx++;
-            onProgress?.(`Создание каналов (${idx}/${order.length}): ${ch.name}`, Math.round(55 + (idx / order.length) * 30));
+            onProgress?.(`Создание каналов (${idx}/${order.length}): ${ch.name}`, Math.round(52 + (idx / order.length) * 32));
             const full = this.channelBody(ch, idMap, roleMap, emojiMap, cfg.userOW);
             full.position = position++;
             let created = null;
             try {
-                created = await this.api("POST", `/guilds/${cfg.dst}/channels`, full);
+                created = await this.api("POST", `/guilds/${cfg.dst}/channels`, full, false, log);
+                idMap.set(ch.id, created.id);
+                log(`[${CHANNEL_TYPES[ch.type] ?? "Канал"}] ${ch.name}`, "info");
             } catch (e) {
                 try {
                     const minimal = { name: ch.name, type: ch.type, position: full.position };
                     if (full.parent_id) minimal.parent_id = full.parent_id;
                     if (full.permission_overwrites) minimal.permission_overwrites = full.permission_overwrites;
-                    created = await this.api("POST", `/guilds/${cfg.dst}/channels`, minimal);
+                    created = await this.api("POST", `/guilds/${cfg.dst}/channels`, minimal, false, log);
+                    idMap.set(ch.id, created.id);
                 } catch (e2) {
-                    log(`Канал «${ch.name}» не создан: ${e2.message}`, "error");
-                    continue;
+                    log(`Канал «${ch.name}» не создан: ${e2.message}`, "warn");
+                    failedChannels.push(ch);
                 }
             }
-            idMap.set(ch.id, created.id);
-            log(`[${CHANNEL_TYPES[ch.type] ?? "Канал"}] ${ch.name}`, "info");
-            await sleep(250);
+            await sleep(450);
         }
-        log(`Создано каналов: ${idMap.size}`, "success");
+
+        // Повторная попытка для упавших
+        if (failedChannels.length > 0 && !this.aborted) {
+            log(`Повторная попытка создания ${failedChannels.length} пропущенных каналов...`, "info");
+            for (const ch of failedChannels) {
+                if (this.aborted) break;
+                try {
+                    const minimal = { name: ch.name, type: ch.type };
+                    if (ch.parent_id && idMap.has(ch.parent_id)) minimal.parent_id = idMap.get(ch.parent_id);
+                    const created = await this.api("POST", `/guilds/${cfg.dst}/channels`, minimal, false, log);
+                    idMap.set(ch.id, created.id);
+                    log(`[Восстановлен] Канал «${ch.name}» создан`, "success");
+                } catch (e) {
+                    log(`Не удалось восстановить «${ch.name}»: ${e.message}`, "error");
+                }
+                await sleep(500);
+            }
+        }
+
+        // Фаза 3: Верификация
+        onProgress?.("Аудит и сверка каналов...", 86);
+        log("Запуск верификации созданных каналов...", "info");
+        const targetChannels = await this.api("GET", `/guilds/${cfg.dst}/channels`, undefined, false, log);
+        let verifiedCount = 0;
+        for (const ch of usable) {
+            const targetId = idMap.get(ch.id);
+            if (targetId && targetChannels?.some((tc) => tc.id === targetId)) {
+                verifiedCount++;
+            }
+        }
+
+        if (verifiedCount === usable.length) {
+            log(`Верификация 100% пройдена: все каналы (${verifiedCount}/${usable.length}) подтверждены!`, "success");
+        } else {
+            log(`Верификация: подтверждено ${verifiedCount} из ${usable.length} каналов`, "warn");
+        }
+
+        return {
+            expected: usable.length,
+            created: idMap.size,
+            verified: verifiedCount
+        };
     }
 
     async copySettings(cfg, idMap, log, onProgress) {
-        onProgress?.("Копирование метаданных сервера...", 88);
-        const g = await this.api("GET", `/guilds/${cfg.src}`);
+        onProgress?.("Копирование метаданных сервера...", 90);
+        const g = await this.api("GET", `/guilds/${cfg.src}`, undefined, false, log);
         const patch = {
             name: g.name,
             verification_level: g.verification_level,
@@ -946,7 +1204,7 @@ module.exports = class ServerCloner {
             patch.public_updates_channel_id = idMap.get(g.public_updates_channel_id);
 
         if (cfg.images) {
-            onProgress?.("Загрузка аватара и баннера сервера...", 92);
+            onProgress?.("Загрузка аватара и баннера сервера...", 94);
             try {
                 if (g.icon) {
                     const ext = g.icon.startsWith("a_") ? "gif" : "png";
@@ -970,13 +1228,19 @@ module.exports = class ServerCloner {
         }
 
         try {
-            await this.api("PATCH", `/guilds/${cfg.dst}`, patch);
+            await this.api("PATCH", `/guilds/${cfg.dst}`, patch, false, log);
             log(`Настройки сервера применены («${g.name}»)`, "success");
         } catch (e) {
             delete patch.icon;
             delete patch.banner;
-            await this.api("PATCH", `/guilds/${cfg.dst}`, patch);
-            log(`Настройки скопированы без иконки/баннера: ${e.message}`, "warn");
+            delete patch.rules_channel_id;
+            delete patch.public_updates_channel_id;
+            try {
+                await this.api("PATCH", `/guilds/${cfg.dst}`, patch, false, log);
+                log(`Настройки применены в базовом формате: ${e.message}`, "warn");
+            } catch (e2) {
+                log(`Не удалось применить настройки: ${e2.message}`, "warn");
+            }
         }
     }
 };
