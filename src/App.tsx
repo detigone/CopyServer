@@ -22,7 +22,7 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'ServerCloner.plugin.js';
+    a.download = 'CopyServer.plugin.js';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -39,7 +39,7 @@ export default function App() {
             <Layers className="w-4 h-4" />
           </div>
           <span className="text-base font-bold tracking-tight text-white whitespace-nowrap">
-            ServerCloner
+            CopyServer
           </span>
         </div>
 
@@ -135,7 +135,7 @@ export default function App() {
       {/* Clean quiet footer */}
       <footer className="mt-auto border-t border-[#3f4147]/40 bg-[#1e1f22] px-6 py-4 text-center text-xs text-[#949ba4]">
         <div className="flex flex-wrap items-center justify-center gap-4 text-xs">
-          <span>ServerCloner Pro UI</span>
+          <span>CopyServer Pro UI</span>
           <span>·</span>
           <span>Поддержка Vencord (React) и BetterDiscord (BD)</span>
           <span>·</span>

@@ -1,5 +1,5 @@
 /**
- * ServerCloner Pro — userplugin for Vencord
+ * CopyServer Pro — userplugin for Vencord
  * Копирует структуру сервера 1:1: роли + права, категории + каналы + overwrites (включая скрытые и приватные),
  * настройки сервера, иконка/баннер, эмодзи.
  *
@@ -124,7 +124,7 @@ function errMsg(e: any): string {
 /**
  * Обертка над RestAPI с соблюдением рейтлимитов (HTTP 429) и защитой от бесконечных повторов
  */
-async function apiRequest(method: "get" | "post" | "patch", url: string, body?: any, log?: LogFn): Promise<any> {
+async function apiRequest(method: "get" | "post" | "patch" | "del", url: string, body?: any, log?: LogFn): Promise<any> {
     const maxRetries = 5;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
@@ -133,8 +133,10 @@ async function apiRequest(method: "get" | "post" | "patch", url: string, body?: 
                 res = await RestAPI.get({ url });
             } else if (method === "post") {
                 res = await RestAPI.post({ url, body });
-            } else {
+            } else if (method === "patch") {
                 res = await RestAPI.patch({ url, body });
+            } else if (method === "del") {
+                res = await (RestAPI.del ? RestAPI.del({ url }) : (RestAPI as any).delete?.({ url }));
             }
             return res?.body ?? res;
         } catch (err: any) {
@@ -178,6 +180,87 @@ async function apiPost(url: string, body?: any, log?: LogFn) {
 
 async function apiPatch(url: string, body?: any, log?: LogFn) {
     return apiRequest("patch", url, body, log);
+}
+
+async function apiDel(url: string, log?: LogFn) {
+    return apiRequest("del", url, undefined, log);
+}
+
+/**
+ * Создание нового пустого сервера в Discord
+ */
+export async function createDiscordGuild(name: string, log?: LogFn): Promise<any> {
+    log?.(`[POST /guilds] Создание нового сервера «${name}»...`, "info");
+    const res = await apiPost("/guilds", { name, icon: null }, log);
+    log?.(`[УСПЕХ] Новый сервер «${name}» успешно создан (ID: ${res?.id})!`, "success");
+    return res;
+}
+
+/**
+ * Полное удаление содержимого целевого сервера (каналы, кастомные роли, эмодзи)
+ */
+export async function purgeDiscordGuild(
+    guildId: string,
+    log: LogFn,
+    onProgress?: ProgressFn
+): Promise<{ channelsDeleted: number; rolesDeleted: number; emojisDeleted: number }> {
+    log(`[ОЧИСТКА] Запуск удаления содержимого целевого сервера ID: ${guildId}...`, "warn");
+    onProgress?.("Получение списка каналов для очистки...", 10);
+
+    // 1. Каналы и категории (сначала обычные каналы, потом категории)
+    const channels = (await apiGet(`/guilds/${guildId}/channels`, log)) || [];
+    const sortedChannels = [...channels].sort((a: any, b: any) => (a.type === 4 ? 1 : 0) - (b.type === 4 ? 1 : 0));
+    let channelsDeleted = 0;
+    for (let i = 0; i < sortedChannels.length; i++) {
+        const ch = sortedChannels[i];
+        onProgress?.(`Удаление каналов (${i + 1}/${sortedChannels.length})...`, 15 + Math.round((i / Math.max(1, sortedChannels.length)) * 40));
+        try {
+            await apiDel(`/channels/${ch.id}`, log);
+            channelsDeleted++;
+            log(`Удален канал: ${ch.name}`, "info");
+        } catch (e: any) {
+            log(`Не удалось удалить канал ${ch.name}: ${errMsg(e)}`, "warn");
+        }
+        await sleep(humanJitter(300, 200));
+    }
+
+    // 2. Пользовательские роли (кроме @everyone и managed бот-ролей)
+    onProgress?.("Получение списка ролей для очистки...", 60);
+    const roles = (await apiGet(`/guilds/${guildId}/roles`, log)) || [];
+    const customRoles = roles.filter((r: any) => !r.managed && r.id !== guildId);
+    let rolesDeleted = 0;
+    for (let i = 0; i < customRoles.length; i++) {
+        const r = customRoles[i];
+        onProgress?.(`Удаление ролей (${i + 1}/${customRoles.length})...`, 65 + Math.round((i / Math.max(1, customRoles.length)) * 25));
+        try {
+            await apiDel(`/guilds/${guildId}/roles/${r.id}`, log);
+            rolesDeleted++;
+            log(`Удалена роль: ${r.name}`, "info");
+        } catch (e: any) {
+            log(`Не удалось удалить роль ${r.name}: ${errMsg(e)}`, "warn");
+        }
+        await sleep(humanJitter(300, 200));
+    }
+
+    // 3. Эмодзи
+    onProgress?.("Получение списка эмодзи для очистки...", 90);
+    const emojis = (await apiGet(`/guilds/${guildId}/emojis`, log)) || [];
+    let emojisDeleted = 0;
+    for (let i = 0; i < emojis.length; i++) {
+        const em = emojis[i];
+        try {
+            await apiDel(`/guilds/${guildId}/emojis/${em.id}`, log);
+            emojisDeleted++;
+            log(`Удален эмодзи: :${em.name}:`, "info");
+        } catch (e: any) {
+            log(`Не удалось удалить эмодзи :${em.name}:: ${errMsg(e)}`, "warn");
+        }
+        await sleep(humanJitter(200, 150));
+    }
+
+    onProgress?.("Сервер очищен!", 100);
+    log(`[УСПЕХ] Сервер полностью очищен: удалено ${channelsDeleted} каналов, ${rolesDeleted} ролей, ${emojisDeleted} эмодзи.`, "success");
+    return { channelsDeleted, rolesDeleted, emojisDeleted };
 }
 
 async function cdnDataUrl(url: string): Promise<string> {
@@ -556,7 +639,7 @@ function channelBody(
     let topicText = ch.topic || "";
 
     if (cfg.watermark && ch.type !== 4) {
-        const tag = (cfg.watermarkText || "[Клон: ServerCloner Pro]").trim();
+        const tag = (cfg.watermarkText || "[Клон: CopyServer Pro]").trim();
         if (tag) {
             const candidateTopic = topicText ? `${topicText} · ${tag}` : tag;
             if (candidateTopic.length > MAX_TOPIC_LENGTH) {
@@ -1245,10 +1328,18 @@ function DiscordSwitch({
 }
 
 function SettingsPanel() {
-    const guilds = useMemo(
+    const rawGuilds = useMemo(
         () => Object.values(GuildStore.getGuilds()).sort((a: any, b: any) => a.name.localeCompare(b.name, "ru")),
         []
     );
+    const [extraGuilds, setExtraGuilds] = useState<any[]>([]);
+    const allGuilds = useMemo(() => {
+        const map = new Map<string, any>();
+        for (const g of rawGuilds) map.set(g.id, g);
+        for (const g of extraGuilds) map.set(g.id, g);
+        return Array.from(map.values()).sort((a: any, b: any) => a.name.localeCompare(b.name, "ru"));
+    }, [rawGuilds, extraGuilds]);
+
     const current = SelectedGuildStore.getGuildId();
 
     const [src, setSrc] = useState(current ?? "");
@@ -1263,10 +1354,16 @@ function SettingsPanel() {
 
     // Новые функции
     const [watermark, setWatermark] = useState(false);
-    const [watermarkText, setWatermarkText] = useState("[Клон: ServerCloner Pro]");
+    const [watermarkText, setWatermarkText] = useState("[Клон: CopyServer Pro]");
     const [stealthMode, setStealthMode] = useState(true);
     const [copyHiddenChannels, setCopyHiddenChannels] = useState(true);
     const [orphanChannelPolicy, setOrphanChannelPolicy] = useState<OrphanPolicy>("skip");
+
+    // Модальные окна создания и очистки сервера
+    const [showCreateGuildModal, setShowCreateGuildModal] = useState(false);
+    const [newGuildName, setNewGuildName] = useState("");
+    const [showPurgeModal, setShowPurgeModal] = useState(false);
+    const [isPurging, setIsPurging] = useState(false);
 
     const [busy, setBusy] = useState(false);
     const [showConfirm, setShowConfirm] = useState(false);
@@ -1284,8 +1381,8 @@ function SettingsPanel() {
     const [copied, setCopied] = useState(false);
     const logRef = useRef<HTMLDivElement>(null);
 
-    const srcGuild = guilds.find((g: any) => g.id === src);
-    const dstGuild = guilds.find((g: any) => g.id === dst);
+    const srcGuild = allGuilds.find((g: any) => g.id === src);
+    const dstGuild = allGuilds.find((g: any) => g.id === dst);
 
     const log: LogFn = (msg, type = "info") => {
         const time = new Date().toLocaleTimeString([], { hour12: false });
@@ -1379,6 +1476,46 @@ function SettingsPanel() {
         ).finally(() => setBusy(false));
     };
 
+    const handleCreateGuild = async () => {
+        const nameToUse = (newGuildName.trim() || `[Клон] ${srcGuild?.name || "Новый сервер"}`).trim();
+        setShowCreateGuildModal(false);
+        setBusy(true);
+        try {
+            const created = await createDiscordGuild(nameToUse, log);
+            setExtraGuilds(prev => [...prev, created]);
+            setDst(created?.id ?? "");
+            showToast(`Сервер «${nameToUse}» успешно создан и выбран!`, "success");
+        } catch (e: any) {
+            log(`Не удалось создать сервер: ${errMsg(e)}`, "error");
+            showToast("Ошибка при создании сервера", "failure");
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const handleOpenPurge = () => {
+        if (!dst) return showToast("Выбери целевой сервер для очистки!", "failure");
+        if (dst === src) return showToast("Запрещено: нельзя очищать исходный сервер-донор!", "failure");
+        setShowPurgeModal(true);
+    };
+
+    const confirmPurgeGuild = async () => {
+        if (!dst) return;
+        setShowPurgeModal(false);
+        setIsPurging(true);
+        setBusy(true);
+        try {
+            await purgeDiscordGuild(dst, log, onProgress);
+            showToast("Содержимое сервера полностью удалено!", "success");
+        } catch (e: any) {
+            log(`Ошибка при очистке сервера: ${errMsg(e)}`, "error");
+            showToast("Не удалось полностью очистить сервер", "failure");
+        } finally {
+            setIsPurging(false);
+            setBusy(false);
+        }
+    };
+
     const onAbort = () => {
         abortRef.current = true;
         log("Запрошена остановка процесса...", "warn");
@@ -1425,7 +1562,7 @@ function SettingsPanel() {
                         alignItems: "center",
                         gap: "8px"
                     }}>
-                        <span>ServerCloner Pro</span>
+                        <span>CopyServer Pro</span>
                         <span style={{
                             fontSize: "11px",
                             fontWeight: 600,
@@ -1592,7 +1729,7 @@ function SettingsPanel() {
                         }}
                     >
                         <option value="">— Выбрать исходный сервер —</option>
-                        {guilds.map((g: any) => (
+                        {allGuilds.map((g: any) => (
                             <option key={g.id} value={g.id}>{g.name} ({g.id.slice(-4)})</option>
                         ))}
                     </select>
@@ -1613,7 +1750,7 @@ function SettingsPanel() {
                     <select
                         value={dst}
                         onChange={e => setDst(e.target.value)}
-                        disabled={busy}
+                        disabled={busy || isPurging}
                         style={{
                             width: "100%",
                             padding: "10px 12px",
@@ -1622,14 +1759,59 @@ function SettingsPanel() {
                             borderRadius: "6px",
                             color: "var(--text-normal, #dbdee1)",
                             fontSize: "13px",
-                            cursor: busy ? "not-allowed" : "pointer"
+                            cursor: (busy || isPurging) ? "not-allowed" : "pointer"
                         }}
                     >
                         <option value="">— Выбрать целевой сервер —</option>
-                        {guilds.map((g: any) => (
+                        {allGuilds.map((g: any) => (
                             <option key={g.id} value={g.id} disabled={g.id === src}>{g.name} {g.id === src ? "(исходный)" : ""}</option>
                         ))}
                     </select>
+
+                    <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setNewGuildName(srcGuild ? `[Клон] ${srcGuild.name}` : "Новый сервер");
+                                setShowCreateGuildModal(true);
+                            }}
+                            disabled={busy || isPurging}
+                            style={{
+                                flex: 1,
+                                padding: "7px 10px",
+                                background: "rgba(88, 101, 242, 0.15)",
+                                border: "1px solid rgba(88, 101, 242, 0.4)",
+                                borderRadius: "6px",
+                                color: "var(--brand-experiment, #5865f2)",
+                                fontSize: "12px",
+                                fontWeight: 600,
+                                cursor: (busy || isPurging) ? "not-allowed" : "pointer",
+                                transition: "all 0.15s ease"
+                            }}
+                        >
+                            ➕ Создать сервер
+                        </button>
+                        <button
+                            type="button"
+                            onClick={handleOpenPurge}
+                            disabled={busy || isPurging || !dst || dst === src}
+                            style={{
+                                flex: 1,
+                                padding: "7px 10px",
+                                background: "rgba(218, 55, 60, 0.15)",
+                                border: "1px solid rgba(218, 55, 60, 0.4)",
+                                borderRadius: "6px",
+                                color: "#f23f43",
+                                fontSize: "12px",
+                                fontWeight: 600,
+                                cursor: (busy || isPurging || !dst || dst === src) ? "not-allowed" : "pointer",
+                                opacity: (!dst || dst === src) ? 0.4 : 1,
+                                transition: "all 0.15s ease"
+                            }}
+                        >
+                            🗑️ Очистить сервер
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -1720,7 +1902,7 @@ function SettingsPanel() {
                             value={watermarkText}
                             onChange={e => setWatermarkText(e.target.value)}
                             disabled={busy}
-                            placeholder="Например: [Клон: ServerCloner Pro]"
+                            placeholder="Например: [Клон: CopyServer Pro]"
                             style={{
                                 flex: 1,
                                 background: "var(--input-background, #2b2d31)",
@@ -1735,7 +1917,7 @@ function SettingsPanel() {
                         />
                         <button
                             type="button"
-                            onClick={() => setWatermarkText("[Клон: ServerCloner Pro]")}
+                            onClick={() => setWatermarkText("[Клон: CopyServer Pro]")}
                             disabled={busy}
                             style={{
                                 background: "var(--background-secondary, #2b2d31)",
@@ -2262,6 +2444,177 @@ function SettingsPanel() {
                     </div>
                 </div>
             )}
+
+            {/* Modal Create Server */}
+            {showCreateGuildModal && (
+                <div style={{
+                    position: "fixed",
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    backgroundColor: "rgba(0, 0, 0, 0.75)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    zIndex: 99999,
+                    padding: "20px"
+                }}>
+                    <div style={{
+                        backgroundColor: "var(--background-primary, #313338)",
+                        border: "1px solid rgba(88, 101, 242, 0.4)",
+                        borderRadius: "12px",
+                        width: "100%",
+                        maxWidth: "460px",
+                        boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+                        overflow: "hidden"
+                    }}>
+                        <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--background-modifier-accent, #3f4147)" }}>
+                            <div style={{ fontSize: "16px", fontWeight: 700, color: "var(--header-primary, #ffffff)" }}>
+                                Создать новый пустой сервер
+                            </div>
+                            <div style={{ fontSize: "12px", color: "var(--text-muted, #949ba4)", marginTop: "4px" }}>
+                                Сервер будет создан через POST /guilds и выбран целевым для копирования 1:1.
+                            </div>
+                        </div>
+                        <div style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: "12px" }}>
+                            <div>
+                                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "var(--header-secondary, #b5bac1)", marginBottom: "6px" }}>
+                                    Название нового сервера:
+                                </label>
+                                <input
+                                    type="text"
+                                    value={newGuildName}
+                                    onChange={e => setNewGuildName(e.target.value)}
+                                    placeholder="Например: [Клон] Мой Сервер"
+                                    style={{
+                                        width: "100%",
+                                        padding: "10px 12px",
+                                        background: "var(--input-background, #1e1f22)",
+                                        border: "1px solid var(--background-modifier-accent, #3f4147)",
+                                        borderRadius: "6px",
+                                        color: "var(--text-normal, #dbdee1)",
+                                        fontSize: "13px"
+                                    }}
+                                    autoFocus
+                                    onKeyDown={e => {
+                                        if (e.key === "Enter") handleCreateGuild();
+                                        if (e.key === "Escape") setShowCreateGuildModal(false);
+                                    }}
+                                />
+                            </div>
+                        </div>
+                        <div style={{ padding: "14px 20px", background: "var(--background-secondary, #2b2d31)", display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+                            <button
+                                onClick={() => setShowCreateGuildModal(false)}
+                                style={{
+                                    padding: "8px 16px",
+                                    background: "transparent",
+                                    border: "1px solid var(--background-modifier-accent, #3f4147)",
+                                    borderRadius: "6px",
+                                    color: "var(--text-normal, #dbdee1)",
+                                    cursor: "pointer",
+                                    fontSize: "13px"
+                                }}
+                            >
+                                Отмена
+                            </button>
+                            <button
+                                onClick={handleCreateGuild}
+                                style={{
+                                    padding: "8px 18px",
+                                    background: "var(--brand-experiment, #5865f2)",
+                                    border: "none",
+                                    borderRadius: "6px",
+                                    color: "#ffffff",
+                                    cursor: "pointer",
+                                    fontSize: "13px",
+                                    fontWeight: 600
+                                }}
+                            >
+                                Создать и выбрать
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Modal Purge Server */}
+            {showPurgeModal && (
+                <div style={{
+                    position: "fixed",
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    backgroundColor: "rgba(0, 0, 0, 0.75)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    zIndex: 99999,
+                    padding: "20px"
+                }}>
+                    <div style={{
+                        backgroundColor: "var(--background-primary, #313338)",
+                        border: "1px solid rgba(218, 55, 60, 0.5)",
+                        borderRadius: "12px",
+                        width: "100%",
+                        maxWidth: "460px",
+                        boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+                        overflow: "hidden"
+                    }}>
+                        <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--background-modifier-accent, #3f4147)" }}>
+                            <div style={{ fontSize: "16px", fontWeight: 700, color: "#f23f43" }}>
+                                ⚠️ Удалить всё содержимое сервера?
+                            </div>
+                            <div style={{ fontSize: "12px", color: "var(--text-muted, #949ba4)", marginTop: "4px" }}>
+                                Целевой сервер: <strong>«{dstGuild?.name || dst}»</strong>
+                            </div>
+                        </div>
+                        <div style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: "10px", fontSize: "13px", color: "var(--text-normal, #dbdee1)" }}>
+                            <p style={{ margin: 0, color: "#f23f43", fontWeight: 600 }}>
+                                Внимание! Это действие безвозвратно удалит все каналы, категории, пользовательские роли и эмодзи на целевом сервере.
+                            </p>
+                            <p style={{ margin: 0, fontSize: "12px", color: "var(--text-muted, #949ba4)" }}>
+                                • Базовая роль @everyone останется нетронутой.<br />
+                                • Исходный сервер не будет затронут.<br />
+                                • Сервер будет полностью очищен и готов к чистому копированию 1:1.
+                            </p>
+                        </div>
+                        <div style={{ padding: "14px 20px", background: "var(--background-secondary, #2b2d31)", display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+                            <button
+                                onClick={() => setShowPurgeModal(false)}
+                                style={{
+                                    padding: "8px 16px",
+                                    background: "transparent",
+                                    border: "1px solid var(--background-modifier-accent, #3f4147)",
+                                    borderRadius: "6px",
+                                    color: "var(--text-normal, #dbdee1)",
+                                    cursor: "pointer",
+                                    fontSize: "13px"
+                                }}
+                            >
+                                Отмена
+                            </button>
+                            <button
+                                onClick={confirmPurgeGuild}
+                                style={{
+                                    padding: "8px 18px",
+                                    background: "#da373c",
+                                    border: "none",
+                                    borderRadius: "6px",
+                                    color: "#ffffff",
+                                    cursor: "pointer",
+                                    fontSize: "13px",
+                                    fontWeight: 600
+                                }}
+                            >
+                                Да, удалить всё содержимое
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
@@ -2269,7 +2622,7 @@ function SettingsPanel() {
 const authors: PluginAuthor[] = [{ name: "opencode", id: 1n }];
 
 export default definePlugin({
-    name: "ServerCloner",
+    name: "CopyServer",
     description: "Копирует каналы и категории с контролем дерева, защищает аккаунт (Stealth Mode) и поддерживает опциональный водяной знак с валидацией длины",
     authors,
     tags: ["Servers", "Utility"],

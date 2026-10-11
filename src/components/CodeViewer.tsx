@@ -11,8 +11,8 @@ export function CodeViewer({ vencordCode, betterDiscordCode }: CodeViewerProps) 
   const [copied, setCopied] = useState(false);
 
   const currentCode = activeTab === 'vencord' ? vencordCode : betterDiscordCode;
-  const currentFileName = activeTab === 'vencord' ? 'index.tsx (Vencord)' : 'ServerCloner.plugin.js (BetterDiscord)';
-  const currentDownloadName = activeTab === 'vencord' ? 'index.tsx' : 'ServerCloner.plugin.js';
+  const currentFileName = activeTab === 'vencord' ? 'index.tsx (Vencord)' : 'CopyServer.plugin.js (BetterDiscord)';
+  const currentDownloadName = activeTab === 'vencord' ? 'index.tsx' : 'CopyServer.plugin.js';
 
   const handleCopy = () => {
     navigator.clipboard.writeText(currentCode);
@@ -92,7 +92,7 @@ export function CodeViewer({ vencordCode, betterDiscordCode }: CodeViewerProps) 
                     : 'text-[#949ba4] hover:text-white'
                 }`}
               >
-                ServerCloner.plugin.js (BetterDiscord)
+                CopyServer.plugin.js (BetterDiscord)
               </button>
             </div>
           </div>

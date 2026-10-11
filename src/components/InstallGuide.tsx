@@ -61,7 +61,7 @@ export function InstallGuide() {
               </span>
               <div>
                 <strong className="text-white block mb-0.5">Активация в клиенте:</strong>
-                Перейдите в <span className="text-white">Настройки пользователя ➔ Vencord ➔ Плагины ➔ ServerCloner</span> и нажмите на шестеренку настроек.
+                Перейдите в <span className="text-white">Настройки пользователя ➔ Vencord ➔ Плагины ➔ CopyServer</span> и нажмите на шестеренку настроек.
               </div>
             </div>
           </div>
@@ -96,7 +96,7 @@ export function InstallGuide() {
               </span>
               <div>
                 <strong className="text-white block mb-0.5">Скопируйте файл плагина:</strong>
-                Положите файл <span className="text-white font-mono">ServerCloner.plugin.js</span> прямо в эту папку.
+                Положите файл <span className="text-white font-mono">CopyServer.plugin.js</span> прямо в эту папку.
               </div>
             </div>
 
@@ -106,7 +106,7 @@ export function InstallGuide() {
               </span>
               <div>
                 <strong className="text-white block mb-0.5">Включите переключатель:</strong>
-                BetterDiscord обнаружит плагин автоматически. Активируйте тумблер около <span className="text-white font-medium">ServerCloner</span>.
+                BetterDiscord обнаружит плагин автоматически. Активируйте тумблер около <span className="text-white font-medium">CopyServer</span>.
               </div>
             </div>
 

@@ -16,7 +16,7 @@ export function sanitizeToken(text) {
 export function processTopicWatermark(ch, cfg, logCallback, reviewCollector) {
     let topicText = ch.topic || "";
     if (cfg.watermark && ch.type !== 4) {
-        const tag = (cfg.watermarkText || "[Клон: ServerCloner Pro]").trim();
+        const tag = (cfg.watermarkText || "[Клон: CopyServer Pro]").trim();
         if (tag) {
             const candidate = topicText ? `${topicText} · ${tag}` : tag;
             if (candidate.length > MAX_TOPIC_LENGTH) {
@@ -170,22 +170,22 @@ export function evaluateAuditStatus(roles, channels, emojis, errors, manualRevie
 
 test('Requirement 10: Watermark handles empty topic', () => {
     const ch = { name: 'welcome', type: 0, topic: '' };
-    const cfg = { watermark: true, watermarkText: '[Клон: ServerCloner Pro]' };
+    const cfg = { watermark: true, watermarkText: '[Клон: CopyServer Pro]' };
     const result = processTopicWatermark(ch, cfg);
-    assert.equal(result, '[Клон: ServerCloner Pro]');
+    assert.equal(result, '[Клон: CopyServer Pro]');
 });
 
 test('Requirement 10: Watermark handles normal topic', () => {
     const ch = { name: 'rules', type: 0, topic: 'Правила нашего сервера' };
-    const cfg = { watermark: true, watermarkText: '[Клон: ServerCloner Pro]' };
+    const cfg = { watermark: true, watermarkText: '[Клон: CopyServer Pro]' };
     const result = processTopicWatermark(ch, cfg);
-    assert.equal(result, 'Правила нашего сервера · [Клон: ServerCloner Pro]');
+    assert.equal(result, 'Правила нашего сервера · [Клон: CopyServer Pro]');
 });
 
 test('Requirement 10: Watermark at exactly 1024 characters max length — preserves topic without silent truncation', () => {
     const maxTopic = 'X'.repeat(1024);
     const ch = { name: 'overflow-test', type: 0, topic: maxTopic };
-    const cfg = { watermark: true, watermarkText: '[Клон: ServerCloner Pro]' };
+    const cfg = { watermark: true, watermarkText: '[Клон: CopyServer Pro]' };
     const warnings = [];
     const reviews = [];
 
@@ -513,4 +513,99 @@ test('Fix 2 Validation: Detects rejected gradient/holographic styles and marks t
     assert.equal(reviews2[0].type, 'role');
     assert.ok(reviews2[0].reason.includes('отклонил'));
 });
+
+// Helper for simulating guild creation
+export function prepareCreateGuildPayload(name) {
+    const trimmed = (name || '').trim();
+    if (!trimmed) throw new Error('Имя сервера не может быть пустым');
+    return {
+        name: trimmed,
+        icon: null
+    };
+}
+
+// Helper for simulating guild purge sorting & filtering
+export function planGuildPurge(guildId, sourceGuildId, channels, roles, emojis) {
+    if (!guildId) throw new Error('Не указан целевой сервер для очистки');
+    if (guildId === sourceGuildId) {
+        throw new Error('Запрещено: исходный сервер-донор защищен от очистки');
+    }
+
+    // Channels: regular channels first, categories (type 4) last
+    const sortedChannels = [...channels].sort((a, b) => (a.type === 4 ? 1 : 0) - (b.type === 4 ? 1 : 0));
+
+    // Roles: filter out @everyone (id === guildId) and managed roles
+    const rolesToDelete = roles.filter(r => r.id !== guildId && !r.managed);
+
+    // Emojis: all custom emojis
+    const emojisToDelete = [...emojis];
+
+    return {
+        channelsToDelete: sortedChannels,
+        rolesToDelete,
+        emojisToDelete
+    };
+}
+
+test('Requirement: Server creation helper prepares proper payload and rejects empty names', () => {
+    const payload = prepareCreateGuildPayload('  [Клон] Gaming Community  ');
+    assert.deepEqual(payload, {
+        name: '[Клон] Gaming Community',
+        icon: null
+    });
+
+    assert.throws(() => {
+        prepareCreateGuildPayload('   ');
+    }, /Имя сервера не может быть пустым/);
+});
+
+test('Requirement: Server purge helper ensures donor server protection and preserves @everyone and managed bot roles', () => {
+    const donorId = '111222333';
+    const targetId = '999888777';
+
+    // 1. Safety check: donor server cannot be purged
+    assert.throws(() => {
+        planGuildPurge(donorId, donorId, [], [], []);
+    }, /исходный сервер-донор защищен/);
+
+    // 2. Channels order: regular channels must be deleted before categories
+    const mockChannels = [
+        { id: 'cat-1', name: 'ИНФОРМАЦИЯ', type: 4 },
+        { id: 'ch-1', name: 'новости', type: 0, parent_id: 'cat-1' },
+        { id: 'ch-2', name: 'чат', type: 0, parent_id: 'cat-1' },
+        { id: 'cat-2', name: 'ГОЛОС', type: 4 },
+        { id: 'voice-1', name: 'Общий', type: 2, parent_id: 'cat-2' }
+    ];
+
+    // 3. Roles filter: @everyone (id === targetId) and managed bot role must NOT be deleted
+    const mockRoles = [
+        { id: targetId, name: '@everyone', managed: false },
+        { id: 'bot-role-1', name: 'Dyno Bot', managed: true },
+        { id: 'custom-role-1', name: 'VIP Member', managed: false },
+        { id: 'custom-role-2', name: 'Admin', managed: false }
+    ];
+
+    const mockEmojis = [
+        { id: 'em-1', name: 'fire' },
+        { id: 'em-2', name: 'heart' }
+    ];
+
+    const plan = planGuildPurge(targetId, donorId, mockChannels, mockRoles, mockEmojis);
+
+    // Verify channel order: regular channels first, categories last
+    assert.equal(plan.channelsToDelete.length, 5);
+    assert.notEqual(plan.channelsToDelete[0].type, 4);
+    assert.notEqual(plan.channelsToDelete[1].type, 4);
+    assert.notEqual(plan.channelsToDelete[2].type, 4);
+    assert.equal(plan.channelsToDelete[3].type, 4);
+    assert.equal(plan.channelsToDelete[4].type, 4);
+
+    // Verify roles: only 2 custom roles to delete, @everyone and managed bot role preserved
+    assert.equal(plan.rolesToDelete.length, 2);
+    assert.deepEqual(plan.rolesToDelete.map(r => r.name), ['VIP Member', 'Admin']);
+
+    // Verify emojis
+    assert.equal(plan.emojisToDelete.length, 2);
+});
+
 

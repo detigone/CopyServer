@@ -72,8 +72,18 @@ export function DiscordPluginSimulator() {
   const [clientType, setClientType] = useState<'vencord' | 'betterdiscord'>('vencord');
   const [themeMode, setThemeMode] = useState<'dark' | 'midnight'>('dark');
 
+  const [guilds, setGuilds] = useState<MockGuild[]>(INITIAL_GUILDS);
   const [srcGuildId, setSrcGuildId] = useState(INITIAL_GUILDS[0].id);
   const [dstGuildId, setDstGuildId] = useState(INITIAL_GUILDS[3].id);
+
+  // Create Server Modal State
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [newServerName, setNewServerName] = useState('');
+  const [isCreatingServer, setIsCreatingServer] = useState(false);
+
+  // Purge Server Modal State
+  const [showPurgeModal, setShowPurgeModal] = useState(false);
+  const [isPurging, setIsPurging] = useState(false);
 
   // Switches
   const [roles, setRoles] = useState(true);
@@ -88,7 +98,7 @@ export function DiscordPluginSimulator() {
 
   // Watermark
   const [watermark, setWatermark] = useState(false);
-  const [watermarkText, setWatermarkText] = useState('[Клон: ServerCloner Pro]');
+  const [watermarkText, setWatermarkText] = useState('[Клон: CopyServer Pro]');
 
   // Execution & Verification State
   const [isCloning, setIsCloning] = useState(false);
@@ -106,12 +116,110 @@ export function DiscordPluginSimulator() {
   const abortRef = useRef(false);
   const consoleEndRef = useRef<HTMLDivElement>(null);
 
-  const srcGuild = INITIAL_GUILDS.find(g => g.id === srcGuildId);
-  const dstGuild = INITIAL_GUILDS.find(g => g.id === dstGuildId);
+  const srcGuild = guilds.find(g => g.id === srcGuildId);
+  const dstGuild = guilds.find(g => g.id === dstGuildId);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  const handleOpenCreateModal = () => {
+    if (isCloning || isPurging) return;
+    setNewServerName(srcGuild ? `[Клон] ${srcGuild.name}` : 'Новый пустой сервер');
+    setShowCreateModal(true);
+  };
+
+  const handleConfirmCreateServer = async () => {
+    const finalName = (newServerName.trim() || (srcGuild ? `[Клон] ${srcGuild.name}` : 'Новый пустой сервер')).trim();
+    setIsCreatingServer(true);
+    setShowCreateModal(false);
+
+    addLog(`Запрос на создание нового сервера «${finalName}» (POST /guilds)...`, 'info');
+    setProgressStep(`Создание сервера «${finalName}» в Discord...`);
+    await new Promise(r => setTimeout(r, 600));
+
+    const newId = String(Date.now());
+    const newGuild: MockGuild = {
+      id: newId,
+      name: finalName,
+      initials: finalName.slice(0, 2).toUpperCase(),
+      color: '#5865f2',
+      memberCount: 1,
+      rolesCount: 1, // Only default @everyone
+      channelsCount: 0,
+      emojisCount: 0,
+    };
+
+    setGuilds(prev => [...prev, newGuild]);
+    setDstGuildId(newId);
+    setIsCreatingServer(false);
+
+    addLog(`[УСПЕХ] Новый сервер «${finalName}» (ID: ${newId}) создан и выбран в качестве целевого!`, 'success');
+    addLog(`Целевой сервер пуст (0 каналов, 0 эмодзи, 1 базовая роль @everyone). Можно начинать чистое копирование 1:1.`, 'info');
+    showToast(`Сервер «${finalName}» создан и выбран!`);
+  };
+
+  const handleOpenPurgeModal = () => {
+    if (isCloning || isPurging) return;
+    if (!dstGuildId) {
+      showToast('Сначала выберите целевой сервер для очистки!');
+      return;
+    }
+    if (dstGuildId === srcGuildId) {
+      showToast('Запрещено: нельзя очищать исходный сервер-донор!');
+      addLog('Попытка очистить исходный сервер-донор заблокирована системой защиты.', 'error');
+      return;
+    }
+    setShowPurgeModal(true);
+  };
+
+  const handleConfirmPurgeServer = async () => {
+    if (!dstGuild) return;
+    setShowPurgeModal(false);
+    setIsPurging(true);
+    abortRef.current = false;
+
+    addLog(`[ОЧИСТКА] Запуск полной очистки сервера «${dstGuild.name}» (ID: ${dstGuild.id})...`, 'warn');
+
+    // Step 1: Channels
+    setProgressStep(`Очистка: удаление каналов и категорий (${dstGuild.channelsCount})...`);
+    setProgressPercent(25);
+    await new Promise(r => setTimeout(r, 550));
+    addLog(`Удалены все каналы и категории (${dstGuild.channelsCount} шт.) через DELETE /channels/{id}`, 'info');
+
+    // Step 2: Roles
+    setProgressStep(`Очистка: удаление кастомных ролей...`);
+    setProgressPercent(60);
+    await new Promise(r => setTimeout(r, 500));
+    const rolesDeleted = Math.max(0, dstGuild.rolesCount - 1);
+    addLog(`Удалены пользовательские роли (${rolesDeleted} шт.). Базовая роль @everyone сохранена.`, 'info');
+
+    // Step 3: Emojis
+    setProgressStep(`Очистка: удаление эмодзи...`);
+    setProgressPercent(85);
+    await new Promise(r => setTimeout(r, 400));
+    addLog(`Удалены пользовательские эмодзи (${dstGuild.emojisCount} шт.) через DELETE /guilds/{id}/emojis/{id}`, 'info');
+
+    // Step 4: Finish
+    setProgressStep('Очистка целевого сервера завершена!');
+    setProgressPercent(100);
+
+    setGuilds(prev => prev.map(g => {
+      if (g.id === dstGuildId) {
+        return {
+          ...g,
+          channelsCount: 0,
+          rolesCount: 1,
+          emojisCount: 0,
+        };
+      }
+      return g;
+    }));
+
+    setIsPurging(false);
+    addLog(`[УСПЕХ] Целевой сервер «${dstGuild.name}» полностью очищен (0 каналов, 1 роль, 0 эмодзи). Сервер готов к чистому копированию 1:1!`, 'success');
+    showToast(`Содержимое сервера «${dstGuild.name}» удалено!`);
   };
 
   const addLog = (msg: string, type: 'info' | 'success' | 'warn' | 'error' = 'info') => {
@@ -494,6 +602,20 @@ export function DiscordPluginSimulator() {
       showToast('Завершено с замечаниями, проверьте аудит');
     }
 
+    if (srcGuild) {
+      setGuilds(prev => prev.map(g => {
+        if (g.id === dstGuildId) {
+          return {
+            ...g,
+            channelsCount: channels ? srcGuild.channelsCount : g.channelsCount,
+            rolesCount: roles ? srcGuild.rolesCount : g.rolesCount,
+            emojisCount: emojis ? srcGuild.emojisCount : g.emojisCount,
+          };
+        }
+        return g;
+      }));
+    }
+
     setIsCloning(false);
 
     setAuditReport({
@@ -543,7 +665,7 @@ export function DiscordPluginSimulator() {
               <span className="w-3 h-3 rounded-full bg-[#3ba55d]" />
             </div>
             <span className="text-xs font-bold text-[#949ba4] tracking-wide ml-2">
-              DISCORD SETTINGS / SERVER CLONER PRO
+              DISCORD SETTINGS / COPYSERVER PRO
             </span>
           </div>
           <div className="flex items-center gap-2 text-xs text-[#949ba4]">
@@ -562,7 +684,7 @@ export function DiscordPluginSimulator() {
             <div>
               <div className="flex items-center gap-2.5">
                 <h1 className="text-xl font-bold text-white tracking-tight">
-                  ServerCloner Pro
+                  CopyServer Pro
                 </h1>
                 <span className="text-[11px] font-bold uppercase tracking-wider bg-[#5865f2] text-white px-2 py-0.5 rounded-full">
                   {clientType.toUpperCase()}
@@ -648,6 +770,159 @@ export function DiscordPluginSimulator() {
             </div>
           )}
 
+          {/* Modal for Creating New Server */}
+          {showCreateModal && (
+            <div className="bg-[#1e1f22] border border-[#5865f2]/40 rounded-xl p-5 text-xs shadow-2xl animate-fadeIn">
+              <div className="flex items-center justify-between pb-2.5 border-b border-white/10 mb-3.5">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-[#5865f2]/20 text-[#5865f2] flex items-center justify-center">
+                    <Sparkles className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-sm text-white">Создать новый пустой сервер</h3>
+                    <p className="text-[11px] text-[#949ba4]">Сервер будет создан через POST /guilds и выбран целевым для чистого копирования 1:1</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateModal(false)}
+                  className="text-[#949ba4] hover:text-white text-base font-bold px-1"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="flex flex-col gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-[#949ba4] mb-1.5">
+                    Название нового сервера
+                  </label>
+                  <input
+                    type="text"
+                    value={newServerName}
+                    onChange={e => setNewServerName(e.target.value)}
+                    placeholder="Например: [Клон] CYBERPUNK // COMMUNITY"
+                    className="w-full bg-[#2b2d31] text-white border border-[#3f4147] rounded-lg px-3.5 py-2.5 text-sm focus:border-[#5865f2] focus:outline-none"
+                    autoFocus
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') handleConfirmCreateServer();
+                      if (e.key === 'Escape') setShowCreateModal(false);
+                    }}
+                  />
+                </div>
+
+                <div className="flex items-center gap-2 text-[11px] text-[#949ba4]">
+                  <span>Быстрые варианты:</span>
+                  <button
+                    type="button"
+                    onClick={() => setNewServerName(srcGuild ? `[Клон] ${srcGuild.name}` : 'Новый сервер')}
+                    className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-[#dbdee1] transition-colors cursor-pointer"
+                  >
+                    [Клон] + Имя источника
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNewServerName('Чистый сервер для клонирования')}
+                    className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-[#dbdee1] transition-colors cursor-pointer"
+                  >
+                    Чистый сервер
+                  </button>
+                </div>
+
+                <div className="bg-[#2b2d31]/80 rounded-lg p-3 border border-white/5 text-[11px] text-[#dbdee1]">
+                  <strong className="text-white block mb-0.5">💡 Как это работает:</strong>
+                  Создаётся новый пустой сервер Discord (с правами Администратора/Владельца). После создания он автоматически становится целевым сервером, что гарантирует отсутствие дублирования каналов или старых ролей при переносе.
+                </div>
+
+                <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-white/10">
+                  <button
+                    type="button"
+                    onClick={() => setShowCreateModal(false)}
+                    className="px-3.5 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-[#949ba4] hover:text-white font-medium cursor-pointer"
+                  >
+                    Отмена
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmCreateServer}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#5865f2] hover:bg-[#4752c4] text-white font-semibold shadow-md cursor-pointer"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Создать и выбрать как целевой</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Modal for Purging Target Server Contents */}
+          {showPurgeModal && dstGuild && (
+            <div className="bg-[#1e1f22] border border-[#da373c]/50 rounded-xl p-5 text-xs shadow-2xl animate-fadeIn">
+              <div className="flex items-center justify-between pb-2.5 border-b border-[#da373c]/20 mb-3.5">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-[#da373c]/20 text-[#da373c] flex items-center justify-center">
+                    <Trash2 className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-sm text-[#f23f43]">Удалить всё содержимое сервера?</h3>
+                    <p className="text-[11px] text-[#949ba4]">Целевой сервер: <strong className="text-white">«{dstGuild.name}»</strong> (ID: {dstGuild.id})</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowPurgeModal(false)}
+                  className="text-[#949ba4] hover:text-white text-base font-bold px-1"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="flex flex-col gap-3">
+                <div className="bg-[#da373c]/10 border border-[#da373c]/30 rounded-lg p-3 text-[11px] text-[#f23f43] leading-relaxed">
+                  ⚠️ <strong>Внимание: это действие необратимо!</strong> Будут удалены все каналы, категории, пользовательские роли и эмодзи на сервере «{dstGuild.name}».
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  <div className="bg-[#2b2d31] p-2.5 rounded-lg border border-white/5">
+                    <span className="text-lg font-bold text-white block">{dstGuild.channelsCount}</span>
+                    <span className="text-[10px] text-[#949ba4]">Каналов / категорий</span>
+                  </div>
+                  <div className="bg-[#2b2d31] p-2.5 rounded-lg border border-white/5">
+                    <span className="text-lg font-bold text-white block">{Math.max(0, dstGuild.rolesCount - 1)}</span>
+                    <span className="text-[10px] text-[#949ba4]">Кастомных ролей</span>
+                  </div>
+                  <div className="bg-[#2b2d31] p-2.5 rounded-lg border border-white/5">
+                    <span className="text-lg font-bold text-white block">{dstGuild.emojisCount}</span>
+                    <span className="text-[10px] text-[#949ba4]">Эмодзи</span>
+                  </div>
+                </div>
+
+                <div className="text-[11px] text-[#949ba4]">
+                  • Базовая роль <strong>@everyone</strong> останется, но все её разрешения будут очищены.<br />
+                  • После очистки сервер станет полностью пустым, готовым для чистого клонирования 1:1.
+                </div>
+
+                <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-white/10">
+                  <button
+                    type="button"
+                    onClick={() => setShowPurgeModal(false)}
+                    className="px-3.5 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-[#949ba4] hover:text-white font-medium cursor-pointer"
+                  >
+                    Отмена
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmPurgeServer}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#da373c] hover:bg-[#ba2e33] text-white font-semibold shadow-md cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Да, удалить всё содержимое сервера</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Server Selector Cards */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="bg-[#2b2d31] border border-[#3f4147]/70 rounded-xl p-4 flex flex-col gap-3">
@@ -670,7 +945,7 @@ export function DiscordPluginSimulator() {
                   disabled={isCloning}
                   className="w-full bg-[#1e1f22] text-[#dbdee1] border border-[#3f4147] rounded-lg px-3.5 py-2.5 text-sm font-medium focus:border-[#5865f2] focus:outline-none transition-colors appearance-none cursor-pointer"
                 >
-                  {INITIAL_GUILDS.map(g => (
+                  {guilds.map(g => (
                     <option key={g.id} value={g.id}>
                       {g.name} ({g.memberCount} уч.)
                     </option>
@@ -707,11 +982,11 @@ export function DiscordPluginSimulator() {
                 <select
                   value={dstGuildId}
                   onChange={e => setDstGuildId(e.target.value)}
-                  disabled={isCloning}
+                  disabled={isCloning || isPurging}
                   className="w-full bg-[#1e1f22] text-[#dbdee1] border border-[#3f4147] rounded-lg px-3.5 py-2.5 text-sm font-medium focus:border-[#5865f2] focus:outline-none transition-colors appearance-none cursor-pointer"
                 >
                   <option value="">— Выбрать целевой сервер —</option>
-                  {INITIAL_GUILDS.map(g => (
+                  {guilds.map(g => (
                     <option key={g.id} value={g.id} disabled={g.id === srcGuildId}>
                       {g.name} {g.id === srcGuildId ? '(исходный)' : ''}
                     </option>
@@ -720,11 +995,44 @@ export function DiscordPluginSimulator() {
                 <ChevronDown className="w-4 h-4 text-[#949ba4] absolute right-3 top-3.5 pointer-events-none" />
               </div>
 
+              {/* Action Buttons: Создать сервер & Удалить содержимое */}
+              <div className="grid grid-cols-2 gap-2 pt-0.5">
+                <button
+                  type="button"
+                  onClick={handleOpenCreateModal}
+                  disabled={isCloning || isPurging}
+                  className="flex items-center justify-center gap-1.5 px-3 py-2 bg-[#5865f2]/15 hover:bg-[#5865f2]/25 text-[#5865f2] hover:text-white border border-[#5865f2]/40 rounded-lg text-xs font-semibold transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Создать новый пустой сервер в Discord и сразу выбрать его для копирования"
+                >
+                  <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                  <span>Создать сервер</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleOpenPurgeModal}
+                  disabled={isCloning || isPurging || !dstGuildId || dstGuildId === srcGuildId}
+                  className="flex items-center justify-center gap-1.5 px-3 py-2 bg-[#da373c]/15 hover:bg-[#da373c]/25 text-[#f23f43] hover:text-white border border-[#da373c]/40 rounded-lg text-xs font-semibold transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="Удалить все каналы, пользовательские роли и эмодзи на целевом сервере"
+                >
+                  <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                  <span>Очистить сервер</span>
+                </button>
+              </div>
+
               {dstGuild && (
-                <div className="flex items-center gap-3 pt-1 border-t border-[#3f4147]/40 text-xs text-[#949ba4]">
-                  <span>Участников: <strong className="text-white">{dstGuild.memberCount}</strong></span>
-                  <span>·</span>
-                  <span className="text-[#23a55a]">Pre-flight проверка активна</span>
+                <div className="flex items-center justify-between pt-1 border-t border-[#3f4147]/40 text-xs text-[#949ba4]">
+                  <div className="flex items-center gap-2">
+                    <span>Каналов: <strong className={dstGuild.channelsCount === 0 ? "text-[#23a55a]" : "text-white"}>{dstGuild.channelsCount}</strong></span>
+                    <span>·</span>
+                    <span>Ролей: <strong className="text-white">{dstGuild.rolesCount}</strong></span>
+                    <span>·</span>
+                    <span>Эмодзи: <strong className="text-white">{dstGuild.emojisCount}</strong></span>
+                  </div>
+                  {dstGuild.channelsCount === 0 && dstGuild.emojisCount === 0 && (
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-[#23a55a] bg-[#23a55a]/10 px-1.5 py-0.5 rounded border border-[#23a55a]/30">
+                      Чистый
+                    </span>
+                  )}
                 </div>
               )}
             </div>
@@ -1075,12 +1383,12 @@ export function DiscordPluginSimulator() {
                       value={watermarkText}
                       onChange={e => setWatermarkText(e.target.value)}
                       disabled={isCloning}
-                      placeholder="Например: [Клон: ServerCloner Pro]"
+                      placeholder="Например: [Клон: CopyServer Pro]"
                       className="w-full bg-[#2b2d31] border border-[#3f4147] focus:border-[#5865f2] rounded-lg px-3 py-1.5 text-xs text-white outline-none font-mono"
                     />
                     <button
                       type="button"
-                      onClick={() => setWatermarkText('[Клон: ServerCloner Pro]')}
+                      onClick={() => setWatermarkText('[Клон: CopyServer Pro]')}
                       className="text-[11px] text-[#949ba4] hover:text-white px-2.5 py-1.5 bg-[#2b2d31] hover:bg-[#3f4147] rounded-lg border border-white/5 whitespace-nowrap transition-colors"
                     >
                       Сброс

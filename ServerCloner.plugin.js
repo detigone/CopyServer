@@ -1,5 +1,5 @@
 /**
- * @name ServerCloner
+ * @name CopyServer
  * @author opencode
  * @description Копирует структуру сервера 1:1: роли + права, категории + каналы + overwrites (включая скрытые и приватные), настройки сервера, иконка/баннер, эмодзи.
  * @version 1.2.0
@@ -397,20 +397,20 @@ const PLUGIN_STYLES = `
 }
 `;
 
-module.exports = class ServerCloner {
+module.exports = class CopyServer {
     constructor() {
         this.aborted = false;
     }
 
     start() {
         if (typeof BdApi !== "undefined" && BdApi.DOM?.addStyle) {
-            BdApi.DOM.addStyle("ServerClonerTheme", PLUGIN_STYLES);
+            BdApi.DOM.addStyle("CopyServerTheme", PLUGIN_STYLES);
         }
     }
 
     stop() {
         if (typeof BdApi !== "undefined" && BdApi.DOM?.removeStyle) {
-            BdApi.DOM.removeStyle("ServerClonerTheme");
+            BdApi.DOM.removeStyle("CopyServerTheme");
         }
     }
 
@@ -505,6 +505,73 @@ module.exports = class ServerCloner {
         return el;
     }
 
+    async createGuild(name, log = null) {
+        log?.(`[POST /guilds] Создание нового пустого сервера «${name}»...`, "info");
+        const res = await this.api("POST", "/guilds", { name, icon: null }, false, log);
+        log?.(`[УСПЕХ] Новый сервер «${name}» успешно создан (ID: ${res?.id})!`, "success");
+        return res;
+    }
+
+    async purgeGuild(guildId, log = null, onProgress = null) {
+        log?.(`[ОЧИСТКА] Запуск удаления содержимого сервера ID: ${guildId}...`, "warn");
+        onProgress?.("Получение списка каналов для очистки...", 10);
+
+        // 1. Каналы и категории (сначала обычные каналы, потом категории)
+        const channels = (await this.api("GET", `/guilds/${guildId}/channels`, undefined, false, log)) || [];
+        const sortedChannels = [...channels].sort((a, b) => (a.type === 4 ? 1 : 0) - (b.type === 4 ? 1 : 0));
+        let channelsDeleted = 0;
+        for (let i = 0; i < sortedChannels.length; i++) {
+            const ch = sortedChannels[i];
+            onProgress?.(`Удаление каналов (${i + 1}/${sortedChannels.length})...`, 15 + Math.round((i / Math.max(1, sortedChannels.length)) * 40));
+            try {
+                await this.api("DELETE", `/channels/${ch.id}`, undefined, false, log);
+                channelsDeleted++;
+                log?.(`Удален канал: ${ch.name}`, "info");
+            } catch (e) {
+                log?.(`Не удалось удалить канал ${ch.name}: ${e.message}`, "warn");
+            }
+            await sleep(humanJitter(300, 200));
+        }
+
+        // 2. Пользовательские роли (кроме @everyone и managed бот-ролей)
+        onProgress?.("Получение списка ролей для очистки...", 60);
+        const roles = (await this.api("GET", `/guilds/${guildId}/roles`, undefined, false, log)) || [];
+        const customRoles = roles.filter((r) => !r.managed && r.id !== guildId);
+        let rolesDeleted = 0;
+        for (let i = 0; i < customRoles.length; i++) {
+            const r = customRoles[i];
+            onProgress?.(`Удаление ролей (${i + 1}/${customRoles.length})...`, 65 + Math.round((i / Math.max(1, customRoles.length)) * 25));
+            try {
+                await this.api("DELETE", `/guilds/${guildId}/roles/${r.id}`, undefined, false, log);
+                rolesDeleted++;
+                log?.(`Удалена роль: ${r.name}`, "info");
+            } catch (e) {
+                log?.(`Не удалось удалить роль ${r.name}: ${e.message}`, "warn");
+            }
+            await sleep(humanJitter(300, 200));
+        }
+
+        // 3. Эмодзи
+        onProgress?.("Получение списка эмодзи для очистки...", 90);
+        const emojis = (await this.api("GET", `/guilds/${guildId}/emojis`, undefined, false, log)) || [];
+        let emojisDeleted = 0;
+        for (let i = 0; i < emojis.length; i++) {
+            const em = emojis[i];
+            try {
+                await this.api("DELETE", `/guilds/${guildId}/emojis/${em.id}`, undefined, false, log);
+                emojisDeleted++;
+                log?.(`Удален эмодзи: :${em.name}:`, "info");
+            } catch (e) {
+                log?.(`Не удалось удалить эмодзи :${em.name}:: ${e.message}`, "warn");
+            }
+            await sleep(humanJitter(200, 150));
+        }
+
+        onProgress?.("Сервер очищен!", 100);
+        log?.(`[УСПЕХ] Сервер полностью очищен: удалено ${channelsDeleted} каналов, ${rolesDeleted} ролей, ${emojisDeleted} эмодзи.`, "success");
+        return { channelsDeleted, rolesDeleted, emojisDeleted };
+    }
+
     getSettingsPanel() {
         const GuildStore = BdApi.Webpack.getStore("GuildStore");
         const SelectedGuildStore = BdApi.Webpack.getStore("SelectedGuildStore");
@@ -524,7 +591,7 @@ module.exports = class ServerCloner {
             userOW: false,
             skipDuplicates: true,
             watermark: false,
-            watermarkText: "[Клон: ServerCloner Pro]",
+            watermarkText: "[Клон: CopyServer Pro]",
             stealthMode: true,
             copyHiddenChannels: true,
             orphanChannelPolicy: "skip",
@@ -544,7 +611,7 @@ module.exports = class ServerCloner {
                 this.h(
                     "div",
                     { class: "sc-title" },
-                    this.h("span", {}, "ServerCloner Pro"),
+                    this.h("span", {}, "CopyServer Pro"),
                     this.h("span", { class: "sc-badge" }, "STEALTH MODE"),
                     this.h("span", { class: "sc-badge-safe" }, "v1.2.0")
                 ),
@@ -588,11 +655,77 @@ module.exports = class ServerCloner {
         const srcSelect = makeGuildSelect(state.src, (val) => (state.src = val));
         const dstSelect = makeGuildSelect(state.dst, (val) => (state.dst = val));
 
+        const createServerBtn = this.h("button", {
+            class: "sc-btn-create-server",
+            style: "flex: 1; padding: 6px 10px; background: rgba(88, 101, 242, 0.15); border: 1px solid rgba(88, 101, 242, 0.4); border-radius: 6px; color: #5865f2; font-size: 11px; font-weight: 600; cursor: pointer; transition: all 0.15s ease;",
+            onclick: async () => {
+                if (state.busy) return;
+                const srcG = guilds.find((g) => g.id === state.src);
+                const defName = srcG ? `[Клон] ${srcG.name}` : "Новый сервер";
+                const serverName = prompt("Введите название нового сервера Discord:", defName);
+                if (!serverName || !serverName.trim()) return;
+                try {
+                    state.busy = true;
+                    const newGuild = await this.createGuild(serverName.trim(), log);
+                    guilds.push(newGuild);
+                    const opt = this.h("option", { value: newGuild.id }, newGuild.name);
+                    opt.selected = true;
+                    dstSelect.append(opt);
+                    state.dst = newGuild.id;
+                    BdApi.UI?.showToast?.(`Сервер «${newGuild.name}» успешно создан и выбран!`, { type: "success" });
+                } catch (e) {
+                    log(`Ошибка создания сервера: ${e.message}`, "error");
+                    BdApi.UI?.showToast?.(`Ошибка: ${e.message}`, { type: "error" });
+                } finally {
+                    state.busy = false;
+                }
+            }
+        }, "➕ Создать сервер");
+
+        const purgeServerBtn = this.h("button", {
+            class: "sc-btn-purge-server",
+            style: "flex: 1; padding: 6px 10px; background: rgba(218, 55, 60, 0.15); border: 1px solid rgba(218, 55, 60, 0.4); border-radius: 6px; color: #f23f43; font-size: 11px; font-weight: 600; cursor: pointer; transition: all 0.15s ease;",
+            onclick: async () => {
+                if (state.busy) return;
+                if (!state.dst) {
+                    BdApi.UI?.showToast?.("Сначала выберите целевой сервер!", { type: "warn" });
+                    return;
+                }
+                if (state.dst === state.src) {
+                    BdApi.UI?.showToast?.("Запрещено: нельзя очищать исходный сервер-донор!", { type: "error" });
+                    return;
+                }
+                const dstG = guilds.find((g) => g.id === state.dst);
+                const gName = dstG?.name || state.dst;
+                const ok = confirm(`ВНИМАНИЕ! Это действие безвозвратно удалит все каналы, категории, пользовательские роли и эмодзи на целевом сервере «${gName}».\n\nПродолжить полную очистку?`);
+                if (!ok) return;
+
+                try {
+                    state.busy = true;
+                    await this.purgeGuild(state.dst, log, onProgress);
+                    BdApi.UI?.showToast?.(`Сервер «${gName}» полностью очищен!`, { type: "success" });
+                } catch (e) {
+                    log(`Ошибка очистки сервера: ${e.message}`, "error");
+                    BdApi.UI?.showToast?.(`Ошибка: ${e.message}`, { type: "error" });
+                } finally {
+                    state.busy = false;
+                }
+            }
+        }, "🗑️ Очистить сервер");
+
+        const targetServerCol = this.h(
+            "div",
+            {},
+            this.h("label", { class: "sc-field-label" }, "Целевой сервер"),
+            dstSelect,
+            this.h("div", { style: "display: flex; gap: 6px; margin-top: 6px;" }, createServerBtn, purgeServerBtn)
+        );
+
         const serversGrid = this.h(
             "div",
             { class: "sc-grid" },
             this.h("div", {}, this.h("label", { class: "sc-field-label" }, "Исходный сервер"), srcSelect),
-            this.h("div", {}, this.h("label", { class: "sc-field-label" }, "Целевой сервер"), dstSelect)
+            targetServerCol
         );
 
         const optionCards = new Map();
@@ -628,14 +761,14 @@ module.exports = class ServerCloner {
             class: "sc-watermark-input",
             type: "text",
             value: state.watermarkText,
-            placeholder: "Например: [Клон: ServerCloner Pro]",
+            placeholder: "Например: [Клон: CopyServer Pro]",
             oninput: (e) => (state.watermarkText = e.target.value),
         });
 
         const watermarkResetBtn = this.h("button", {
             class: "sc-watermark-reset-btn",
             onclick: () => {
-                state.watermarkText = "[Клон: ServerCloner Pro]";
+                state.watermarkText = "[Клон: CopyServer Pro]";
                 watermarkInput.value = state.watermarkText;
             }
         }, "Сброс");
@@ -1325,7 +1458,7 @@ module.exports = class ServerCloner {
         let topicText = ch.topic || "";
 
         if (cfg.watermark && ch.type !== 4) {
-            const tag = (cfg.watermarkText || "[Клон: ServerCloner Pro]").trim();
+            const tag = (cfg.watermarkText || "[Клон: CopyServer Pro]").trim();
             if (tag) {
                 const candidateTopic = topicText ? `${topicText} · ${tag}` : tag;
                 if (candidateTopic.length > MAX_TOPIC_LENGTH) {
