@@ -166,6 +166,37 @@ export function evaluateAuditStatus(roles, channels, emojis, errors, manualRevie
     return 'success';
 }
 
+// Helper: Adapt channel for non-community guilds (e.g. Announcement type 5 -> Text type 0)
+export function adaptChannelForGuild(ch, isCommunityGuild = false) {
+    if (!isCommunityGuild && ch.type === 5) {
+        return {
+            ...ch,
+            type: 0,
+            adaptedFromAnnouncement: true
+        };
+    }
+    return { ...ch };
+}
+
+// Helper: Map channel permission overwrites preserving @everyone deny (hidden channels) and roles
+export function mapPermissionOverwrites(overwrites, srcGuildId, dstGuildId, roleMap, allowUserOW = false) {
+    if (!overwrites || !Array.isArray(overwrites)) return [];
+    const mapped = [];
+    for (const ow of overwrites) {
+        if (ow.type === 0) {
+            // Role overwrite
+            if (ow.id === srcGuildId) {
+                mapped.push({ id: dstGuildId, type: 0, allow: ow.allow, deny: ow.deny });
+            } else if (roleMap.has(ow.id)) {
+                mapped.push({ id: roleMap.get(ow.id), type: 0, allow: ow.allow, deny: ow.deny });
+            }
+        } else if (ow.type === 1 && allowUserOW) {
+            mapped.push({ id: ow.id, type: 1, allow: ow.allow, deny: ow.deny });
+        }
+    }
+    return mapped;
+}
+
 // ================= TEST SUITE =================
 
 test('Requirement 10: Watermark handles empty topic', () => {
@@ -606,6 +637,88 @@ test('Requirement: Server purge helper ensures donor server protection and prese
 
     // Verify emojis
     assert.equal(plan.emojisToDelete.length, 2);
+});
+
+test('Requirement 4: Preserves exact channel permissions and role overwrites', () => {
+    const srcGuildId = 'src-123';
+    const dstGuildId = 'dst-456';
+    const roleMap = new Map([
+        ['src-admin-role', 'dst-admin-role'],
+        ['src-moderator-role', 'dst-moderator-role']
+    ]);
+
+    const originalOverwrites = [
+        { id: srcGuildId, type: 0, allow: '1024', deny: '0' }, // @everyone
+        { id: 'src-admin-role', type: 0, allow: '8', deny: '0' },
+        { id: 'src-moderator-role', type: 0, allow: '8192', deny: '2048' },
+        { id: 'unknown-role', type: 0, allow: '1024', deny: '0' } // non-existent role, should be filtered
+    ];
+
+    const mapped = mapPermissionOverwrites(originalOverwrites, srcGuildId, dstGuildId, roleMap);
+
+    assert.equal(mapped.length, 3);
+    // @everyone mapped to target guild id
+    assert.deepEqual(mapped[0], { id: dstGuildId, type: 0, allow: '1024', deny: '0' });
+    // roles mapped to their target counterparts
+    assert.deepEqual(mapped[1], { id: 'dst-admin-role', type: 0, allow: '8', deny: '0' });
+    assert.deepEqual(mapped[2], { id: 'dst-moderator-role', type: 0, allow: '8192', deny: '2048' });
+});
+
+test('Requirement 4: Hidden channels identification and preservation of @everyone VIEW_CHANNEL deny (1024)', () => {
+    const srcGuildId = 'guild-999';
+    const dstGuildId = 'guild-888';
+
+    // Channel with deny 1024 on @everyone is a hidden channel
+    const hiddenChannel = {
+        name: 'secret-chat',
+        type: 0,
+        permission_overwrites: [
+            { id: srcGuildId, type: 0, allow: '0', deny: '1024' },
+            { id: 'role-vip', type: 0, allow: '1024', deny: '0' }
+        ]
+    };
+
+    assert.equal(isChannelHidden(hiddenChannel, srcGuildId), true);
+
+    const roleMap = new Map([['role-vip', 'target-role-vip']]);
+    const mapped = mapPermissionOverwrites(hiddenChannel.permission_overwrites, srcGuildId, dstGuildId, roleMap);
+
+    // Mapped overwrites must preserve the hidden channel setting (@everyone deny 1024)
+    assert.equal(mapped.length, 2);
+    assert.equal(mapped[0].id, dstGuildId);
+    assert.equal(mapped[0].deny, '1024');
+    assert.equal(mapped[1].id, 'target-role-vip');
+    assert.equal(mapped[1].allow, '1024');
+
+    // Public channel without VIEW_CHANNEL deny
+    const publicChannel = {
+        name: 'general',
+        type: 0,
+        permission_overwrites: [
+            { id: srcGuildId, type: 0, allow: '1024', deny: '0' }
+        ]
+    };
+    assert.equal(isChannelHidden(publicChannel, srcGuildId), false);
+});
+
+test('Requirement 4: Announcement channel (type 5) adapts to regular text channel (type 0) when guild is not community', () => {
+    const announcementChannel = {
+        id: 'ann-1',
+        name: 'announcements',
+        type: 5,
+        topic: 'Important news'
+    };
+
+    // When guild is community, type remains 5
+    const forCommunity = adaptChannelForGuild(announcementChannel, true);
+    assert.equal(forCommunity.type, 5);
+
+    // When guild is NOT community, type converts to regular text channel (0)
+    const forNonCommunity = adaptChannelForGuild(announcementChannel, false);
+    assert.equal(forNonCommunity.type, 0);
+    assert.equal(forNonCommunity.name, 'announcements');
+    assert.equal(forNonCommunity.topic, 'Important news');
+    assert.equal(forNonCommunity.adaptedFromAnnouncement, true);
 });
 
 

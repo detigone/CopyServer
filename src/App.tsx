@@ -135,9 +135,13 @@ export default function App() {
       {/* Clean quiet footer */}
       <footer className="mt-auto border-t border-[#3f4147]/40 bg-[#1e1f22] px-6 py-4 text-center text-xs text-[#949ba4]">
         <div className="flex flex-wrap items-center justify-center gap-4 text-xs">
-          <span>CopyServer Pro UI</span>
+          <span className="font-semibold text-white">CopyServer Pro</span>
           <span>·</span>
-          <span>Поддержка Vencord (React) и BetterDiscord (BD)</span>
+          <span>Компания: <strong className="text-[#23a55a]">Lime Systems</strong></span>
+          <span>·</span>
+          <span>Основатель: <strong className="text-white">detigone</strong></span>
+          <span>·</span>
+          <span>Vencord (React) & BetterDiscord</span>
           <span>·</span>
           <span>Discord Design System 2026</span>
         </div>

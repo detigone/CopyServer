@@ -1,6 +1,6 @@
 /**
  * @name CopyServer
- * @author opencode
+ * @author detigone (Lime Systems)
  * @description Копирует структуру сервера 1:1: роли + права, категории + каналы + overwrites (включая скрытые и приватные), настройки сервера, иконка/баннер, эмодзи.
  * @version 1.2.0
  */
@@ -1661,18 +1661,56 @@ module.exports = class CopyServer {
                 const orphanBadge = ch.isOrphanRelocated ? " [В КОРНЕ]" : "";
                 log(`[${SUPPORTED_CHANNEL_TYPES[ch.type]?.name ?? "Канал"}] Создан: ${ch.name}${hiddenBadge}${orphanBadge}`, "info");
             } catch (e) {
-                try {
-                    const minimal = { name: ch.name, type: ch.type, position: full.position };
-                    if (full.parent_id) minimal.parent_id = full.parent_id;
-                    if (full.permission_overwrites) minimal.permission_overwrites = full.permission_overwrites;
-                    if (full.topic) minimal.topic = full.topic;
-                    created = await this.api("POST", `/guilds/${cfg.dst}/channels`, minimal, false, log);
-                    idMap.set(ch.id, created.id);
-                    createdCount++;
-                    log(`[${SUPPORTED_CHANNEL_TYPES[ch.type]?.name ?? "Канал"}] Создан (упрощенный): ${ch.name}`, "info");
-                } catch (e2) {
-                    log(`Канал «${ch.name}» не создан: ${e2.message}`, "warn");
-                    failedChannels.push(ch);
+                let recovered = false;
+
+                // Если канал объявлений (type 5) или специальный канал не создается из-за отсутствия режима Community
+                if (ch.type === 5 || ch.type === 13 || ch.type === 15 || ch.type === 16) {
+                    try {
+                        const fallbackBody = { ...full, type: 0 };
+                        delete fallbackBody.available_tags;
+                        delete fallbackBody.default_reaction_emoji;
+                        delete fallbackBody.default_sort_order;
+                        delete fallbackBody.default_forum_layout;
+                        delete fallbackBody.bitrate;
+                        delete fallbackBody.user_limit;
+                        delete fallbackBody.rtc_region;
+
+                        created = await this.api("POST", `/guilds/${cfg.dst}/channels`, fallbackBody, false, log);
+                        idMap.set(ch.id, created.id);
+                        createdCount++;
+                        recovered = true;
+
+                        const typeName = ch.type === 5 ? "Объявления" : (SUPPORTED_CHANNEL_TYPES[ch.type]?.name ?? "Специальный канал");
+                        const warnMsg = `[Адаптация типа канала] Канал «${ch.name}» (${typeName}) создан как обычный Текстовый канал (сервер не поддерживает тип или отключена функция Сообщества). Все права, темы и категории сохранены.`;
+                        log(warnMsg, "warn");
+                        warnings.push(warnMsg);
+                        manualReviews.push({
+                            type: "channel",
+                            name: ch.name,
+                            id: ch.id,
+                            reason: `Канал ${typeName} адаптирован в обычный текстовый канал (отсутствует функция Сообщества)`,
+                            actionRequired: "Включить функцию Сообщества в настройках сервера, если требуются настоящие каналы Объявлений"
+                        });
+                    } catch (fallbackErr) {
+                        // Fallback to minimal
+                    }
+                }
+
+                if (!recovered) {
+                    try {
+                        const minimal = { name: ch.name, type: ch.type === 5 ? 0 : ch.type, position: full.position };
+                        if (full.parent_id) minimal.parent_id = full.parent_id;
+                        if (full.permission_overwrites) minimal.permission_overwrites = full.permission_overwrites;
+                        if (full.topic) minimal.topic = full.topic;
+                        created = await this.api("POST", `/guilds/${cfg.dst}/channels`, minimal, false, log);
+                        idMap.set(ch.id, created.id);
+                        createdCount++;
+                        const typeLabel = ch.type === 5 ? "Текстовый (вместо Объявлений)" : (SUPPORTED_CHANNEL_TYPES[ch.type]?.name ?? "Канал");
+                        log(`[${typeLabel}] Создан (упрощенный): ${ch.name}`, "info");
+                    } catch (e2) {
+                        log(`Канал «${ch.name}» не создан: ${e2.message}`, "warn");
+                        failedChannels.push(ch);
+                    }
                 }
             }
 
@@ -1691,12 +1729,14 @@ module.exports = class CopyServer {
             for (const ch of failedChannels) {
                 if (this.aborted) break;
                 try {
-                    const minimal = { name: ch.name, type: ch.type };
+                    const retryType = ch.type === 5 ? 0 : ch.type;
+                    const minimal = { name: ch.name, type: retryType };
                     if (ch.parent_id && idMap.has(ch.parent_id)) minimal.parent_id = idMap.get(ch.parent_id);
                     const created = await this.api("POST", `/guilds/${cfg.dst}/channels`, minimal, false, log);
                     idMap.set(ch.id, created.id);
                     createdCount++;
-                    log(`[Восстановлен] Канал «${ch.name}» успешно создан`, "success");
+                    const note = ch.type === 5 ? " (адаптирован как текстовый)" : "";
+                    log(`[Восстановлен] Канал «${ch.name}» успешно создан${note}`, "success");
                 } catch (retryErr) {
                     failedCount++;
                     const m = `Повторная попытка для «${ch.name}» не удалась: ${retryErr.message}`;

@@ -528,10 +528,29 @@ export function DiscordPluginSimulator() {
           }
         }
 
+        // Announcement channel (type 5) handling if destination server is not Community
+        const isAnnouncementChannel = ch.id === 'ch-1';
+        let channelTypeLabel = '[Канал]';
+        let announcementAdaptationNote = '';
+
+        if (isAnnouncementChannel) {
+          channelTypeLabel = '[Текст (вместо Объявлений)]';
+          announcementAdaptationNote = ' [тип Объявления → Текстовый: Community не активно]';
+          const adaptWarn = `[Адаптация типа канала] Канал «${ch.name}» (Объявления) создан как обычный Текстовый канал (целевой сервер без функции Сообщества). Все права и настройки сохранены.`;
+          addLog(adaptWarn, 'warn');
+          warningsList.push(adaptWarn);
+          reviewsList.push({
+            type: 'channel',
+            name: ch.name,
+            reason: 'Канал Объявлений адаптирован в обычный текстовый канал (отсутствует функция Сообщества)',
+            actionRequired: 'Включить функцию Сообщества в настройках целевого сервера при необходимости'
+          });
+        }
+
         const topicBadge = watermark ? ` [topic: "${topicDisplay}"]` : '';
         const orphanBadge = ch.isOrphanRoot ? ' [В КОРНЕ]' : '';
         const hiddenBadge = ch.hidden ? ' [🔒 ПРИВАТНЫЙ]' : '';
-        addLog(`[Канал] Создан: ${ch.name}${hiddenBadge}${orphanBadge}${topicBadge}`, 'info');
+        addLog(`${channelTypeLabel} Создан: ${ch.name}${hiddenBadge}${orphanBadge}${announcementAdaptationNote}${topicBadge}`, 'info');
 
         channelsMetrics.created++;
         if (ch.hidden) simulatedHiddenChannels++;
