@@ -19,49 +19,48 @@ export function InstallGuide() {
             <span className="w-7 h-7 rounded-lg bg-[#5865f2]/20 text-[#5865f2] flex items-center justify-center font-bold text-xs">
               V
             </span>
-            <h3 className="text-base font-bold text-white">Установка в Vencord (UserPlugins)</h3>
+            <h3 className="text-base font-bold text-white">Интеграция в Vencord (Два способа)</h3>
           </div>
 
-          <div className="flex flex-col gap-3.5 text-xs text-[#949ba4]">
-            <div className="flex items-start gap-3">
-              <span className="w-5 h-5 rounded-full bg-[#1e1f22] text-white flex items-center justify-center font-bold text-[11px] shrink-0 mt-0.5">
-                1
+          <div className="flex flex-col gap-4 text-xs text-[#949ba4]">
+            {/* Method A: UserPlugins folder in source build */}
+            <div className="bg-[#1e1f22] p-3 rounded-lg border border-white/5">
+              <span className="text-white font-bold block mb-1.5 text-xs text-[#5865f2]">
+                Способ 1: Локальный Vencord (UserPlugins / Сборка)
               </span>
-              <div>
-                <strong className="text-white block mb-0.5">Откройте папку userplugins Vencord:</strong>
-                <code className="text-[#5865f2] bg-[#1e1f22] px-2 py-0.5 rounded font-mono text-[11px]">
-                  %appdata%\Vencord\src\userplugins\serverCloner\index.tsx
-                </code>
-              </div>
+              <ol className="list-decimal list-inside space-y-1 text-[#dbdee1]">
+                <li>
+                  Клонируйте репозиторий Vencord: <code className="text-[#23a55a] font-mono text-[11px]">git clone https://github.com/Vendicated/Vencord</code>
+                </li>
+                <li>
+                  Перейдите в папку <code className="text-[#5865f2] font-mono text-[11px]">src/userplugins/</code> (если папки нет — создайте её).
+                </li>
+                <li>
+                  Создайте папку <code className="text-[#5865f2] font-mono text-[11px]">copyServer/</code> и поместите внутрь файл <code className="text-white font-mono text-[11px]">index.tsx</code>:
+                  <div className="bg-[#2b2d31] p-1.5 rounded mt-1 font-mono text-[11px] text-[#dbdee1]">
+                    src/userplugins/copyServer/index.tsx
+                  </div>
+                </li>
+                <li>
+                  Установите зависимости и соберите: <code className="text-[#23a55a] font-mono text-[11px]">pnpm i && pnpm build</code>
+                </li>
+                <li>
+                  Установите Vencord в Discord через установщик: <code className="text-[#23a55a] font-mono text-[11px]">pnpm inject</code>
+                </li>
+              </ol>
             </div>
 
-            <div className="flex items-start gap-3">
-              <span className="w-5 h-5 rounded-full bg-[#1e1f22] text-white flex items-center justify-center font-bold text-[11px] shrink-0 mt-0.5">
-                2
+            {/* Method B: UserScripts / Browser Extension / Vencord Companion */}
+            <div className="bg-[#1e1f22] p-3 rounded-lg border border-white/5">
+              <span className="text-white font-bold block mb-1.5 text-xs text-[#23a55a]">
+                Способ 2: Готовый JS-плагин (BetterDiscord / Vencord Quick CSS & JS)
               </span>
-              <div>
-                <strong className="text-white block mb-0.5">Поместите файл:</strong>
-                Скопируйте обновленный файл <span className="text-white font-mono">serverCloner/index.tsx</span> в эту директорию.
-              </div>
-            </div>
-
-            <div className="flex items-start gap-3">
-              <span className="w-5 h-5 rounded-full bg-[#1e1f22] text-white flex items-center justify-center font-bold text-[11px] shrink-0 mt-0.5">
-                3
-              </span>
-              <div>
-                <strong className="text-white block mb-0.5">Соберите или перезапустите:</strong>
-                Если вы собираете Vencord из исходников, выполните <code className="text-[#23a55a] font-mono">pnpm build</code>.
-              </div>
-            </div>
-
-            <div className="flex items-start gap-3">
-              <span className="w-5 h-5 rounded-full bg-[#1e1f22] text-white flex items-center justify-center font-bold text-[11px] shrink-0 mt-0.5">
-                4
-              </span>
-              <div>
-                <strong className="text-white block mb-0.5">Активация в клиенте:</strong>
-                Перейдите в <span className="text-white">Настройки пользователя ➔ Vencord ➔ Плагины ➔ CopyServer</span> и нажмите на шестеренку настроек.
+              <p className="text-[#dbdee1] mb-1.5 leading-relaxed">
+                Если вы используете уже установленный Vencord без сборки из исходников, используйте готовый скомпилированный бандл <strong className="text-white">CopyServer.plugin.js</strong> либо загрузите его через расширение Vencord Companion / BetterDiscord.
+              </p>
+              <div className="text-[11px] text-[#949ba4]">
+                • В Vencord откройте <strong>Настройки ➔ Vencord ➔ Плагины</strong> и включите <strong>CopyServer</strong>.<br />
+                • Панель откроется по нажатию на шестерёнку настроек плагина.
               </div>
             </div>
           </div>

@@ -1401,10 +1401,11 @@ function SettingsPanel() {
     const [copyHiddenChannels, setCopyHiddenChannels] = useState(true);
     const [orphanChannelPolicy, setOrphanChannelPolicy] = useState<OrphanPolicy>("skip");
 
-    // Модальные окна создания и очистки сервера
+    // Модальные окна создания и очистки сервера (3-этапная защита от миссклика)
     const [showCreateGuildModal, setShowCreateGuildModal] = useState(false);
     const [newGuildName, setNewGuildName] = useState("");
     const [showPurgeModal, setShowPurgeModal] = useState(false);
+    const [purgeStep, setPurgeStep] = useState<1 | 2 | 3>(1);
     const [isPurging, setIsPurging] = useState(false);
 
     const [busy, setBusy] = useState(false);
@@ -1538,6 +1539,7 @@ function SettingsPanel() {
     const handleOpenPurge = () => {
         if (!dst) return showToast("Выбери целевой сервер для очистки!", "failure");
         if (dst === src) return showToast("Запрещено: нельзя очищать исходный сервер-донор!", "failure");
+        setPurgeStep(1);
         setShowPurgeModal(true);
     };
 
@@ -2581,7 +2583,7 @@ function SettingsPanel() {
                 </div>
             )}
 
-            {/* Modal Purge Server */}
+            {/* Modal Purge Server with 3-Step Confirmation & Swapped Buttons */}
             {showPurgeModal && (
                 <div style={{
                     position: "fixed",
@@ -2589,7 +2591,7 @@ function SettingsPanel() {
                     left: 0,
                     right: 0,
                     bottom: 0,
-                    backgroundColor: "rgba(0, 0, 0, 0.75)",
+                    backgroundColor: "rgba(0, 0, 0, 0.8)",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
@@ -2601,58 +2603,174 @@ function SettingsPanel() {
                         border: "1px solid rgba(218, 55, 60, 0.5)",
                         borderRadius: "12px",
                         width: "100%",
-                        maxWidth: "460px",
-                        boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+                        maxWidth: "480px",
+                        boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
                         overflow: "hidden"
                     }}>
                         <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--background-modifier-accent, #3f4147)" }}>
                             <div style={{ fontSize: "16px", fontWeight: 700, color: "#f23f43" }}>
-                                ⚠️ Удалить всё содержимое сервера?
+                                ⚠️ Удалить всё содержимое сервера? (Шаг {purgeStep} из 3)
                             </div>
                             <div style={{ fontSize: "12px", color: "var(--text-muted, #949ba4)", marginTop: "4px" }}>
                                 Целевой сервер: <strong>«{dstGuild?.name || dst}»</strong>
                             </div>
                         </div>
-                        <div style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: "10px", fontSize: "13px", color: "var(--text-normal, #dbdee1)" }}>
-                            <p style={{ margin: 0, color: "#f23f43", fontWeight: 600 }}>
-                                Внимание! Это действие безвозвратно удалит все каналы, категории, пользовательские роли и эмодзи на целевом сервере.
-                            </p>
-                            <p style={{ margin: 0, fontSize: "12px", color: "var(--text-muted, #949ba4)" }}>
-                                • Базовая роль @everyone останется нетронутой.<br />
-                                • Исходный сервер не будет затронут.<br />
-                                • Сервер будет полностью очищен и готов к чистому копированию 1:1.
-                            </p>
+
+                        {/* Step indicator */}
+                        <div style={{ display: "flex", gap: "6px", padding: "12px 20px 0 20px" }}>
+                            <div style={{ flex: 1, height: "4px", borderRadius: "2px", background: purgeStep >= 1 ? "#da373c" : "#3f4147" }} />
+                            <div style={{ flex: 1, height: "4px", borderRadius: "2px", background: purgeStep >= 2 ? "#da373c" : "#3f4147" }} />
+                            <div style={{ flex: 1, height: "4px", borderRadius: "2px", background: purgeStep >= 3 ? "#da373c" : "#3f4147" }} />
                         </div>
-                        <div style={{ padding: "14px 20px", background: "var(--background-secondary, #2b2d31)", display: "flex", justifyContent: "flex-end", gap: "10px" }}>
-                            <button
-                                onClick={() => setShowPurgeModal(false)}
-                                style={{
-                                    padding: "8px 16px",
-                                    background: "transparent",
-                                    border: "1px solid var(--background-modifier-accent, #3f4147)",
-                                    borderRadius: "6px",
-                                    color: "var(--text-normal, #dbdee1)",
-                                    cursor: "pointer",
-                                    fontSize: "13px"
-                                }}
-                            >
-                                Отмена
-                            </button>
-                            <button
-                                onClick={confirmPurgeGuild}
-                                style={{
-                                    padding: "8px 18px",
-                                    background: "#da373c",
-                                    border: "none",
-                                    borderRadius: "6px",
-                                    color: "#ffffff",
-                                    cursor: "pointer",
-                                    fontSize: "13px",
-                                    fontWeight: 600
-                                }}
-                            >
-                                Да, удалить всё содержимое
-                            </button>
+
+                        <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: "12px", fontSize: "13px", color: "var(--text-normal, #dbdee1)" }}>
+                            {purgeStep === 1 && (
+                                <>
+                                    <p style={{ margin: 0, color: "#f23f43", fontWeight: 600 }}>
+                                        Этап 1/3: Внимание! Это действие безвозвратно удалит все каналы, категории, пользовательские роли и эмодзи на целевом сервере.
+                                    </p>
+                                    <p style={{ margin: 0, fontSize: "12px", color: "var(--text-muted, #949ba4)" }}>
+                                        • Базовая роль @everyone останется нетронутой.<br />
+                                        • Исходный сервер не будет затронут.<br />
+                                        • Сервер будет полностью очищен и готов к чистому копированию 1:1.
+                                    </p>
+                                </>
+                            )}
+
+                            {purgeStep === 2 && (
+                                <>
+                                    <div style={{ padding: "10px 12px", background: "rgba(240, 178, 50, 0.15)", border: "1px solid rgba(240, 178, 50, 0.4)", borderRadius: "6px", color: "#f0b232", fontSize: "12px" }}>
+                                        🛑 <strong>Этап 2/3 (Защита от случайного нажатия):</strong> Кнопки поменялись местами! Проверьте, что вы действительно хотите очистить сервер <strong>«{dstGuild?.name || dst}»</strong>, а не нажать «Отмена».
+                                    </div>
+                                    <p style={{ margin: 0, fontSize: "12px", color: "var(--text-muted, #949ba4)" }}>
+                                        Будут вызваны прямые API запросы DELETE для каждого канала, роли и эмодзи.
+                                    </p>
+                                </>
+                            )}
+
+                            {purgeStep === 3 && (
+                                <>
+                                    <div style={{ padding: "10px 12px", background: "rgba(218, 55, 60, 0.2)", border: "1px solid rgba(218, 55, 60, 0.6)", borderRadius: "6px", color: "#ffffff", fontSize: "12px" }}>
+                                        🔥 <strong>Этап 3/3 (Финальное подтверждение):</strong> Это последний рубеж. Восстановить удалённые каналы и роли будет невозможно!
+                                    </div>
+                                    <p style={{ margin: 0, fontSize: "12px", color: "var(--text-muted, #949ba4)" }}>
+                                        Для запуска процедуры очистки нажмите красную кнопку.
+                                    </p>
+                                </>
+                            )}
+                        </div>
+
+                        {/* Button footer with swapped positions */}
+                        <div style={{
+                            padding: "14px 20px",
+                            background: "var(--background-secondary, #2b2d31)",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center"
+                        }}>
+                            {purgeStep === 1 && (
+                                <>
+                                    <button
+                                        onClick={() => setShowPurgeModal(false)}
+                                        style={{
+                                            padding: "8px 16px",
+                                            background: "transparent",
+                                            border: "1px solid var(--background-modifier-accent, #3f4147)",
+                                            borderRadius: "6px",
+                                            color: "var(--text-normal, #dbdee1)",
+                                            cursor: "pointer",
+                                            fontSize: "13px"
+                                        }}
+                                    >
+                                        Отмена
+                                    </button>
+                                    <button
+                                        onClick={() => setPurgeStep(2)}
+                                        style={{
+                                            padding: "8px 18px",
+                                            background: "#da373c",
+                                            border: "none",
+                                            borderRadius: "6px",
+                                            color: "#ffffff",
+                                            cursor: "pointer",
+                                            fontSize: "13px",
+                                            fontWeight: 600
+                                        }}
+                                    >
+                                        Я понимаю риск, перейти к Шагу 2 →
+                                    </button>
+                                </>
+                            )}
+
+                            {purgeStep === 2 && (
+                                <>
+                                    {/* Swapped layout: Confirmation on the LEFT, Cancel on the RIGHT */}
+                                    <button
+                                        onClick={() => setPurgeStep(3)}
+                                        style={{
+                                            padding: "8px 18px",
+                                            background: "#da373c",
+                                            border: "none",
+                                            borderRadius: "6px",
+                                            color: "#ffffff",
+                                            cursor: "pointer",
+                                            fontSize: "13px",
+                                            fontWeight: 600
+                                        }}
+                                    >
+                                        ← Подтверждаю, перейти к финальному Шагу 3
+                                    </button>
+                                    <button
+                                        onClick={() => setShowPurgeModal(false)}
+                                        style={{
+                                            padding: "8px 16px",
+                                            background: "transparent",
+                                            border: "1px solid var(--background-modifier-accent, #3f4147)",
+                                            borderRadius: "6px",
+                                            color: "var(--text-normal, #dbdee1)",
+                                            cursor: "pointer",
+                                            fontSize: "13px"
+                                        }}
+                                    >
+                                        Отмена
+                                    </button>
+                                </>
+                            )}
+
+                            {purgeStep === 3 && (
+                                <>
+                                    <button
+                                        onClick={() => setShowPurgeModal(false)}
+                                        style={{
+                                            padding: "8px 16px",
+                                            background: "transparent",
+                                            border: "1px solid var(--background-modifier-accent, #3f4147)",
+                                            borderRadius: "6px",
+                                            color: "var(--text-normal, #dbdee1)",
+                                            cursor: "pointer",
+                                            fontSize: "13px"
+                                        }}
+                                    >
+                                        Отмена (остановить)
+                                    </button>
+                                    <button
+                                        onClick={confirmPurgeGuild}
+                                        style={{
+                                            padding: "8px 20px",
+                                            background: "#da373c",
+                                            border: "none",
+                                            borderRadius: "6px",
+                                            color: "#ffffff",
+                                            cursor: "pointer",
+                                            fontSize: "13px",
+                                            fontWeight: 700,
+                                            boxShadow: "0 0 12px rgba(218, 55, 60, 0.4)"
+                                        }}
+                                    >
+                                        УДАЛИТЬ ВСЁ СОДЕРЖИМОЕ СЕРВЕРА
+                                    </button>
+                                </>
+                            )}
                         </div>
                     </div>
                 </div>

@@ -81,8 +81,9 @@ export function DiscordPluginSimulator() {
   const [newServerName, setNewServerName] = useState('');
   const [isCreatingServer, setIsCreatingServer] = useState(false);
 
-  // Purge Server Modal State
+  // Purge Server Modal State (3-step confirmation to prevent accidental clicks)
   const [showPurgeModal, setShowPurgeModal] = useState(false);
+  const [purgeStep, setPurgeStep] = useState<1 | 2 | 3>(1);
   const [isPurging, setIsPurging] = useState(false);
 
   // Switches
@@ -171,6 +172,7 @@ export function DiscordPluginSimulator() {
       addLog('Попытка очистить исходный сервер-донор заблокирована системой защиты.', 'error');
       return;
     }
+    setPurgeStep(1);
     setShowPurgeModal(true);
   };
 
@@ -874,7 +876,7 @@ export function DiscordPluginSimulator() {
             </div>
           )}
 
-          {/* Modal for Purging Target Server Contents */}
+          {/* Modal for Purging Target Server Contents with 3-Step Confirmation & Swapped Buttons */}
           {showPurgeModal && dstGuild && (
             <div className="bg-[#1e1f22] border border-[#da373c]/50 rounded-xl p-5 text-xs shadow-2xl animate-fadeIn">
               <div className="flex items-center justify-between pb-2.5 border-b border-[#da373c]/20 mb-3.5">
@@ -883,61 +885,146 @@ export function DiscordPluginSimulator() {
                     <Trash2 className="w-4 h-4" />
                   </div>
                   <div>
-                    <h3 className="font-bold text-sm text-[#f23f43]">Удалить всё содержимое сервера?</h3>
+                    <h3 className="font-bold text-sm text-[#f23f43]">
+                      Удалить всё содержимое сервера? (Шаг {purgeStep} из 3)
+                    </h3>
                     <p className="text-[11px] text-[#949ba4]">Целевой сервер: <strong className="text-white">«{dstGuild.name}»</strong> (ID: {dstGuild.id})</p>
                   </div>
                 </div>
                 <button
                   type="button"
                   onClick={() => setShowPurgeModal(false)}
-                  className="text-[#949ba4] hover:text-white text-base font-bold px-1"
+                  className="text-[#949ba4] hover:text-white text-base font-bold px-1 cursor-pointer"
                 >
                   ✕
                 </button>
               </div>
 
+              {/* Progress steps indicator */}
+              <div className="flex items-center gap-2 mb-3">
+                <div className={`flex-1 h-1.5 rounded-full transition-colors ${purgeStep >= 1 ? 'bg-[#da373c]' : 'bg-[#3f4147]'}`} />
+                <div className={`flex-1 h-1.5 rounded-full transition-colors ${purgeStep >= 2 ? 'bg-[#da373c]' : 'bg-[#3f4147]'}`} />
+                <div className={`flex-1 h-1.5 rounded-full transition-colors ${purgeStep >= 3 ? 'bg-[#da373c]' : 'bg-[#3f4147]'}`} />
+              </div>
+
               <div className="flex flex-col gap-3">
-                <div className="bg-[#da373c]/10 border border-[#da373c]/30 rounded-lg p-3 text-[11px] text-[#f23f43] leading-relaxed">
-                  ⚠️ <strong>Внимание: это действие необратимо!</strong> Будут удалены все каналы, категории, пользовательские роли и эмодзи на сервере «{dstGuild.name}».
-                </div>
+                {/* Step 1: Warning and statistics */}
+                {purgeStep === 1 && (
+                  <>
+                    <div className="bg-[#da373c]/10 border border-[#da373c]/30 rounded-lg p-3 text-[11px] text-[#f23f43] leading-relaxed">
+                      ⚠️ <strong>Этап 1/3 — Оценка последствий:</strong> Действие безвозвратно удалит все каналы, категории, роли и эмодзи на сервере «{dstGuild.name}».
+                    </div>
 
-                <div className="grid grid-cols-3 gap-2 text-center">
-                  <div className="bg-[#2b2d31] p-2.5 rounded-lg border border-white/5">
-                    <span className="text-lg font-bold text-white block">{dstGuild.channelsCount}</span>
-                    <span className="text-[10px] text-[#949ba4]">Каналов / категорий</span>
-                  </div>
-                  <div className="bg-[#2b2d31] p-2.5 rounded-lg border border-white/5">
-                    <span className="text-lg font-bold text-white block">{Math.max(0, dstGuild.rolesCount - 1)}</span>
-                    <span className="text-[10px] text-[#949ba4]">Кастомных ролей</span>
-                  </div>
-                  <div className="bg-[#2b2d31] p-2.5 rounded-lg border border-white/5">
-                    <span className="text-lg font-bold text-white block">{dstGuild.emojisCount}</span>
-                    <span className="text-[10px] text-[#949ba4]">Эмодзи</span>
-                  </div>
-                </div>
+                    <div className="grid grid-cols-3 gap-2 text-center">
+                      <div className="bg-[#2b2d31] p-2.5 rounded-lg border border-white/5">
+                        <span className="text-lg font-bold text-white block">{dstGuild.channelsCount}</span>
+                        <span className="text-[10px] text-[#949ba4]">Каналов / категорий</span>
+                      </div>
+                      <div className="bg-[#2b2d31] p-2.5 rounded-lg border border-white/5">
+                        <span className="text-lg font-bold text-white block">{Math.max(0, dstGuild.rolesCount - 1)}</span>
+                        <span className="text-[10px] text-[#949ba4]">Кастомных ролей</span>
+                      </div>
+                      <div className="bg-[#2b2d31] p-2.5 rounded-lg border border-white/5">
+                        <span className="text-lg font-bold text-white block">{dstGuild.emojisCount}</span>
+                        <span className="text-[10px] text-[#949ba4]">Эмодзи</span>
+                      </div>
+                    </div>
 
-                <div className="text-[11px] text-[#949ba4]">
-                  • Базовая роль <strong>@everyone</strong> останется, но все её разрешения будут очищены.<br />
-                  • После очистки сервер станет полностью пустым, готовым для чистого клонирования 1:1.
-                </div>
+                    <div className="text-[11px] text-[#949ba4]">
+                      • Базовая роль <strong>@everyone</strong> останется, но права очистятся.<br />
+                      • Исходный сервер не пострадает. Для перехода на Шаг 2 нажмите кнопку подтверждения справа.
+                    </div>
 
-                <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-white/10">
-                  <button
-                    type="button"
-                    onClick={() => setShowPurgeModal(false)}
-                    className="px-3.5 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-[#949ba4] hover:text-white font-medium cursor-pointer"
-                  >
-                    Отмена
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleConfirmPurgeServer}
-                    className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#da373c] hover:bg-[#ba2e33] text-white font-semibold shadow-md cursor-pointer"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Да, удалить всё содержимое сервера</span>
-                  </button>
-                </div>
+                    {/* Step 1 button layout: [Отмена] [Далее: Шаг 2 ->] */}
+                    <div className="flex items-center justify-between pt-2 border-t border-white/10">
+                      <button
+                        type="button"
+                        onClick={() => setShowPurgeModal(false)}
+                        className="px-3.5 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-[#949ba4] hover:text-white font-medium cursor-pointer"
+                      >
+                        Отмена
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPurgeStep(2)}
+                        className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#da373c] hover:bg-[#ba2e33] text-white font-semibold shadow-md cursor-pointer"
+                      >
+                        <span>Я понимаю риск, перейти к Шагу 2 →</span>
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                {/* Step 2: Inverted position test to prevent misclicks */}
+                {purgeStep === 2 && (
+                  <>
+                    <div className="bg-[#f0b232]/10 border border-[#f0b232]/40 rounded-lg p-3 text-[11px] text-[#f0b232] leading-relaxed">
+                      🛑 <strong>Этап 2/3 — Защита от миссклика:</strong> Кнопки поменялись местами! Убедитесь, что вы действительно хотите очистить сервер <strong>«{dstGuild.name}»</strong>, а не закрыть окно.
+                    </div>
+
+                    <div className="p-3 bg-[#2b2d31] rounded-lg border border-white/5 text-[11px] text-[#dbdee1] flex flex-col gap-1.5">
+                      <span className="text-white font-bold">Будут немедленно вызваны методы API:</span>
+                      <span className="font-mono text-[#949ba4] text-[10px]">DELETE /channels/&#123;id&#125; — для всех {dstGuild.channelsCount} каналов</span>
+                      <span className="font-mono text-[#949ba4] text-[10px]">DELETE /guilds/{dstGuild.id}/roles/&#123;id&#125; — для всех кастомных ролей</span>
+                      <span className="font-mono text-[#949ba4] text-[10px]">DELETE /guilds/{dstGuild.id}/emojis/&#123;id&#125; — для всех эмодзи</span>
+                    </div>
+
+                    {/* Step 2 button layout (SWAPPED): [Кнопка подтверждения слева] [Отмена справа] */}
+                    <div className="flex items-center justify-between pt-2 border-t border-white/10">
+                      <button
+                        type="button"
+                        onClick={() => setPurgeStep(3)}
+                        className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#da373c] hover:bg-[#ba2e33] text-white font-semibold shadow-md cursor-pointer"
+                      >
+                        <span>← Подтверждаю, перейти к финальному шагу 3</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowPurgeModal(false)}
+                        className="px-3.5 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-[#949ba4] hover:text-white font-medium cursor-pointer"
+                      >
+                        Отмена
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                {/* Step 3: Final confirmation */}
+                {purgeStep === 3 && (
+                  <>
+                    <div className="bg-[#da373c]/20 border border-[#da373c]/60 rounded-lg p-3 text-[11px] text-white leading-relaxed">
+                      🔥 <strong>Этап 3/3 — Финальный рубеж:</strong> Сервер <strong>«{dstGuild.name}»</strong> будет необратимо опустошён прямо сейчас.
+                    </div>
+
+                    <div className="p-3 bg-[#da373c]/10 rounded-lg border border-[#da373c]/30 text-center">
+                      <p className="text-xs font-bold text-[#f23f43] mb-1">
+                        Все данные будут стёрты без возможности восстановления!
+                      </p>
+                      <p className="text-[11px] text-[#949ba4]">
+                        Нажмите красную кнопку справа для старта процесса очистки.
+                      </p>
+                    </div>
+
+                    {/* Step 3 button layout: [Назад к шагу 2] [Финальное удаление] */}
+                    <div className="flex items-center justify-between pt-2 border-t border-white/10">
+                      <button
+                        type="button"
+                        onClick={() => setShowPurgeModal(false)}
+                        className="px-3.5 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-[#949ba4] hover:text-white font-medium cursor-pointer"
+                      >
+                        Отмена (остановить всё)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleConfirmPurgeServer}
+                        className="flex items-center gap-2 px-5 py-2 rounded-lg bg-[#da373c] hover:bg-[#a1282c] text-white font-bold shadow-lg shadow-[#da373c]/30 cursor-pointer animate-pulse"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                        <span>УДАЛИТЬ ВСЁ СОДЕРЖИМОЕ СЕРВЕРА</span>
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           )}

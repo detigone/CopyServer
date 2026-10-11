@@ -697,7 +697,112 @@ module.exports = class CopyServer {
                 }
                 const dstG = guilds.find((g) => g.id === state.dst);
                 const gName = dstG?.name || state.dst;
-                const ok = confirm(`ВНИМАНИЕ! Это действие безвозвратно удалит все каналы, категории, пользовательские роли и эмодзи на целевом сервере «${gName}».\n\nПродолжить полную очистку?`);
+
+                // 3-этапное подтверждение с защитой от миссклика и сменой расположения кнопок
+                const showThreeStepConfirmation = () => new Promise((resolve) => {
+                    let step = 1;
+
+                    const overlay = this.h("div", {
+                        style: "position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); z-index: 99999; display: flex; align-items: center; justify-content: center; padding: 20px;"
+                    });
+
+                    const box = this.h("div", {
+                        style: "background: #313338; border: 1px solid rgba(218,55,60,0.5); border-radius: 12px; width: 100%; maxWidth: 480px; box-shadow: 0 8px 32px rgba(0,0,0,0.6); overflow: hidden; font-family: sans-serif;"
+                    });
+
+                    const renderStep = () => {
+                        box.innerHTML = "";
+
+                        // Header
+                        const header = this.h("div", {
+                            style: "padding: 16px 20px; border-bottom: 1px solid #3f4147;"
+                        },
+                            this.h("div", { style: "font-size: 16px; font-weight: 700; color: #f23f43;" }, `⚠️ Удалить всё содержимое сервера? (Шаг ${step} из 3)`),
+                            this.h("div", { style: "font-size: 12px; color: #949ba4; margin-top: 4px;" }, `Целевой сервер: «${gName}»`)
+                        );
+
+                        // Indicator
+                        const indicator = this.h("div", { style: "display: flex; gap: 6px; padding: 12px 20px 0 20px;" },
+                            this.h("div", { style: `flex: 1; height: 4px; border-radius: 2px; background: ${step >= 1 ? '#da373c' : '#3f4147'};` }),
+                            this.h("div", { style: `flex: 1; height: 4px; border-radius: 2px; background: ${step >= 2 ? '#da373c' : '#3f4147'};` }),
+                            this.h("div", { style: `flex: 1; height: 4px; border-radius: 2px; background: ${step >= 3 ? '#da373c' : '#3f4147'};` })
+                        );
+
+                        // Body
+                        let bodyContent;
+                        if (step === 1) {
+                            bodyContent = this.h("div", { style: "padding: 16px 20px; display: flex; flex-direction: column; gap: 10px; font-size: 13px; color: #dbdee1;" },
+                                this.h("p", { style: "margin: 0; color: #f23f43; font-weight: 600;" }, "Этап 1/3: Внимание! Будут безвозвратно удалены все каналы, категории, пользовательские роли и эмодзи."),
+                                this.h("p", { style: "margin: 0; font-size: 12px; color: #949ba4;" }, "• Роль @everyone останется нетронутой.<br>• Исходный сервер не пострадает.<br>• Нажмите кнопку справа для перехода к Шагу 2.")
+                            );
+                        } else if (step === 2) {
+                            bodyContent = this.h("div", { style: "padding: 16px 20px; display: flex; flex-direction: column; gap: 10px; font-size: 13px; color: #dbdee1;" },
+                                this.h("div", { style: "padding: 10px 12px; background: rgba(240, 178, 50, 0.15); border: 1px solid rgba(240, 178, 50, 0.4); border-radius: 6px; color: #f0b232; font-size: 12px;" },
+                                    "🛑 <strong>Этап 2/3 (Защита от миссклика):</strong> Кнопки поменялись местами! Убедитесь, что вы действительно подтверждаете очистку, а не хотите закрыть окно."
+                                ),
+                                this.h("p", { style: "margin: 0; font-size: 12px; color: #949ba4;" }, "Будут вызваны прямые REST API запросы DELETE для каждого объекта.")
+                            );
+                        } else {
+                            bodyContent = this.h("div", { style: "padding: 16px 20px; display: flex; flex-direction: column; gap: 10px; font-size: 13px; color: #dbdee1;" },
+                                this.h("div", { style: "padding: 10px 12px; background: rgba(218, 55, 60, 0.2); border: 1px solid rgba(218, 55, 60, 0.6); border-radius: 6px; color: #ffffff; font-size: 12px;" },
+                                    "🔥 <strong>Этап 3/3 (Финальное подтверждение):</strong> Это последний рубеж. Восстановление данных будет невозможно."
+                                ),
+                                this.h("p", { style: "margin: 0; font-size: 12px; color: #949ba4;" }, "Нажмите красную кнопку справа для старта немедленного удаления.")
+                            );
+                        }
+
+                        // Footer with button swapping
+                        const footer = this.h("div", {
+                            style: "padding: 14px 20px; background: #2b2d31; display: flex; justify-content: space-between; align-items: center;"
+                        });
+
+                        const cancelBtn = this.h("button", {
+                            style: "padding: 8px 16px; background: transparent; border: 1px solid #3f4147; border-radius: 6px; color: #dbdee1; cursor: pointer; font-size: 13px;",
+                            onclick: () => {
+                                document.body.removeChild(overlay);
+                                resolve(false);
+                            }
+                        }, step === 3 ? "Отмена (остановить)" : "Отмена");
+
+                        if (step === 1) {
+                            const nextBtn = this.h("button", {
+                                style: "padding: 8px 18px; background: #da373c; border: none; border-radius: 6px; color: #ffffff; cursor: pointer; font-size: 13px; font-weight: 600;",
+                                onclick: () => { step = 2; renderStep(); }
+                            }, "Я понимаю риск, перейти к Шагу 2 →");
+                            footer.appendChild(cancelBtn);
+                            footer.appendChild(nextBtn);
+                        } else if (step === 2) {
+                            // Inverted layout
+                            const nextBtn = this.h("button", {
+                                style: "padding: 8px 18px; background: #da373c; border: none; border-radius: 6px; color: #ffffff; cursor: pointer; font-size: 13px; font-weight: 600;",
+                                onclick: () => { step = 3; renderStep(); }
+                            }, "← Подтверждаю, перейти к финальному Шагу 3");
+                            footer.appendChild(nextBtn);
+                            footer.appendChild(cancelBtn);
+                        } else {
+                            const confirmBtn = this.h("button", {
+                                style: "padding: 8px 20px; background: #da373c; border: none; border-radius: 6px; color: #ffffff; cursor: pointer; font-size: 13px; font-weight: 700; box-shadow: 0 0 12px rgba(218,55,60,0.5);",
+                                onclick: () => {
+                                    document.body.removeChild(overlay);
+                                    resolve(true);
+                                }
+                            }, "УДАЛИТЬ ВСЁ СОДЕРЖИМОЕ СЕРВЕРА");
+                            footer.appendChild(cancelBtn);
+                            footer.appendChild(confirmBtn);
+                        }
+
+                        box.appendChild(header);
+                        box.appendChild(indicator);
+                        box.appendChild(bodyContent);
+                        box.appendChild(footer);
+                    };
+
+                    renderStep();
+                    overlay.appendChild(box);
+                    document.body.appendChild(overlay);
+                });
+
+                const ok = await showThreeStepConfirmation();
                 if (!ok) return;
 
                 try {
