@@ -364,3 +364,153 @@ test('Requirement 13: Token sanitization masks sensitive Discord credentials in 
     assert.ok(!sanitized.includes("Gb7XYZ"));
     assert.ok(sanitized.includes("[TOKEN_PROTECTED]"));
 });
+
+// Preflight checks logic test
+export async function runPreflight(mockApiCall, cfg, warnings, errors) {
+    try {
+        const targetGuild = await mockApiCall(`/guilds/${cfg.dst}`);
+        if (!targetGuild) {
+            errors.push("Целевой сервер недоступен");
+            return false;
+        }
+        return true;
+    } catch (e) {
+        const msg = String(e?.message || e);
+        const isCritical = /401|403|unauthorized|forbidden|отсутствует доступ|permission/i.test(msg) ||
+            e?.status === 401 || e?.status === 403;
+        if (isCritical) {
+            errors.push(`Критическая ошибка доступа Pre-Flight [${msg}]`);
+            return false;
+        }
+        warnings.push(`Предупреждение Pre-Flight: ${msg}`);
+        return true;
+    }
+}
+
+test('Fix 1: Pre-flight returns false on critical access error exception (401/403/Forbidden)', async () => {
+    const warnings = [];
+    const errors = [];
+    const cfg = { src: 'src-1', dst: 'dst-1' };
+
+    // Critical exception: 403 Forbidden
+    const mockCrit = async () => {
+        const err = new Error('HTTP 403: Forbidden - Missing Permissions');
+        err.status = 403;
+        throw err;
+    };
+
+    const resCrit = await runPreflight(mockCrit, cfg, warnings, errors);
+    assert.equal(resCrit, false, 'Preflight must return false on critical permission error');
+    assert.equal(errors.length, 1);
+    assert.ok(errors[0].includes('Критическая ошибка доступа'));
+
+    // Non-critical exception: transient latency / warning
+    const warnList = [];
+    const errList = [];
+    const mockWarn = async () => {
+        throw new Error('504 Gateway Timeout or Rate Limit Warning');
+    };
+    const resWarn = await runPreflight(mockWarn, cfg, warnList, errList);
+    assert.equal(resWarn, true, 'Non-critical error issues warning but does not abort prematurely');
+    assert.equal(warnList.length, 1);
+    assert.equal(errList.length, 0);
+});
+
+// Role color processing test
+export function processRoleColors(role) {
+    const body = {
+        name: role.name,
+        permissions: role.permissions || '0',
+    };
+    if (role.color) body.color = role.color;
+
+    if (role.colors && typeof role.colors === 'object') {
+        body.colors = {
+            primary_color: role.colors.primary_color ?? role.color ?? 0,
+            ...(role.colors.secondary_color !== undefined ? { secondary_color: role.colors.secondary_color } : {}),
+            ...(role.colors.tertiary_color !== undefined ? { tertiary_color: role.colors.tertiary_color } : {})
+        };
+    }
+    return body;
+}
+
+test('Fix 2: Full gradient and holographic role colors preservation with primary, secondary, and tertiary', () => {
+    // Standard monochrome role
+    const monoRole = { name: 'Admin', color: 0xff0000 };
+    const monoBody = processRoleColors(monoRole);
+    assert.equal(monoBody.color, 0xff0000);
+    assert.equal(monoBody.colors, undefined);
+
+    // Gradient/holographic role with secondary & tertiary colors
+    const gradRole = {
+        name: 'VIP Holographic',
+        color: 0x112233,
+        colors: {
+            primary_color: 0x112233,
+            secondary_color: 0x445566,
+            tertiary_color: 0x778899
+        }
+    };
+    const gradBody = processRoleColors(gradRole);
+    assert.ok(gradBody.colors);
+    assert.equal(gradBody.colors.primary_color, 0x112233);
+    assert.equal(gradBody.colors.secondary_color, 0x445566);
+    assert.equal(gradBody.colors.tertiary_color, 0x778899);
+});
+
+// Role creation style verification logic
+export function validateRoleCreatedColors(srcRole, createdRole, warnings, manualReviews) {
+    if (srcRole.colors && (srcRole.colors.secondary_color || srcRole.colors.tertiary_color)) {
+        const hasSecondary = createdRole.colors && createdRole.colors.secondary_color !== undefined;
+        if (!hasSecondary) {
+            const warnGradient = `Роль «${srcRole.name}»: градиентный/голографический стиль не поддерживается целевым сервером (сохранен базовый цвет)`;
+            warnings.push(warnGradient);
+            manualReviews.push({
+                type: 'role',
+                name: srcRole.name,
+                reason: 'Целевой сервер Discord отклонил вторичный/третичный цвет градиента',
+                actionRequired: 'Проверить премиум-статус целевого сервера или настроить цвет вручную'
+            });
+            return false;
+        }
+    }
+    return true;
+}
+
+test('Fix 2 Validation: Detects rejected gradient/holographic styles and marks them in manual review list', () => {
+    const srcGradRole = {
+        name: 'Platinum Supporter',
+        color: 0x112233,
+        colors: { primary_color: 0x112233, secondary_color: 0x445566, tertiary_color: 0x778899 }
+    };
+
+    // Case 1: Target server accepts and preserves gradient
+    const acceptedRole = {
+        id: 'new-role-1',
+        name: 'Platinum Supporter',
+        colors: { primary_color: 0x112233, secondary_color: 0x445566 }
+    };
+    const warn1 = [];
+    const reviews1 = [];
+    const valid1 = validateRoleCreatedColors(srcGradRole, acceptedRole, warn1, reviews1);
+    assert.equal(valid1, true);
+    assert.equal(warn1.length, 0);
+    assert.equal(reviews1.length, 0);
+
+    // Case 2: Target server strips gradient and falls back to monochrome
+    const rejectedRole = {
+        id: 'new-role-2',
+        name: 'Platinum Supporter',
+        color: 0x112233,
+        colors: null // Target stripped extended colors
+    };
+    const warn2 = [];
+    const reviews2 = [];
+    const valid2 = validateRoleCreatedColors(srcGradRole, rejectedRole, warn2, reviews2);
+    assert.equal(valid2, false);
+    assert.equal(warn2.length, 1);
+    assert.equal(reviews2.length, 1);
+    assert.equal(reviews2[0].type, 'role');
+    assert.ok(reviews2[0].reason.includes('отклонил'));
+});
+

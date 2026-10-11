@@ -206,7 +206,7 @@ async function preflightChecks(
     try {
         const targetGuild = await apiGet(`/guilds/${cfg.dst}`, log);
         if (!targetGuild) {
-            const errStr = "Целевой сервер недоступен или отсутствует доступ";
+            const errStr = "Целевой сервер недоступен или отсутствует доступ (критическая ошибка авторизации/прав)";
             log(errStr, "error");
             errors.push(errStr);
             return false;
@@ -233,10 +233,21 @@ async function preflightChecks(
 
         return true;
     } catch (e: any) {
-        const m = `Ошибка Pre-Flight: ${errMsg(e)}`;
-        log(m, "warn");
-        warnings.push(m);
-        return true;
+        const msg = errMsg(e);
+        const isCritical = /401|403|unauthorized|forbidden|недействительный|отсутствует доступ|permission/i.test(msg) ||
+            e?.status === 401 || e?.status === 403;
+
+        if (isCritical) {
+            const errStr = `Критическая ошибка доступа Pre-Flight [${msg}]. Копирование остановлено во избежание блокировки.`;
+            log(errStr, "error");
+            errors.push(errStr);
+            return false;
+        } else {
+            const w = `Предупреждение Pre-Flight: ${msg}`;
+            log(w, "warn");
+            warnings.push(w);
+            return true;
+        }
     }
 }
 
@@ -332,21 +343,61 @@ async function copyRoles(
         if (r.color) body.color = r.color;
         if (r.unicode_emoji) body.unicode_emoji = r.unicode_emoji;
 
+        // Перенос расширенной цветовой палитры (градиентные / голографические роли)
+        if (r.colors && typeof r.colors === "object") {
+            body.colors = {
+                primary_color: r.colors.primary_color ?? r.color ?? 0,
+                ...(r.colors.secondary_color !== undefined ? { secondary_color: r.colors.secondary_color } : {}),
+                ...(r.colors.tertiary_color !== undefined ? { tertiary_color: r.colors.tertiary_color } : {})
+            };
+        }
+
         let created: any = null;
         try {
             created = await apiPost(`/guilds/${cfg.dst}/roles`, body, log);
             createdCount++;
             roleMap.set(r.id, created.id);
+
+            // Проверка фактического сохранения градиента/голографического стиля
+            if (r.colors && (r.colors.secondary_color || r.colors.tertiary_color)) {
+                if (!created.colors || !created.colors.secondary_color) {
+                    const warnGradient = `Роль «${r.name}»: градиентный/голографический стиль не поддерживается целевым сервером (сохранен базовый цвет)`;
+                    log(`[Стили ролей] ${warnGradient}`, "warn");
+                    warnings.push(warnGradient);
+                    manualReviews.push({
+                        type: "role",
+                        name: r.name,
+                        id: r.id,
+                        reason: "Целевой сервер Discord не сохранил вторичный/третичный цвет градиента",
+                        actionRequired: "Проверить премиум-статус целевого сервера или настроить цвет вручную"
+                    });
+                }
+            }
+
             log(`Роль создана: ${r.name}`, "info");
         } catch (e) {
             try {
                 const alt = { ...body };
                 delete alt.color;
-                if (r.color) alt.colors = { primary_color: r.color };
+                // Формируем полный объект colors со всеми доступными компонентами
+                alt.colors = {
+                    primary_color: r.colors?.primary_color ?? r.color ?? 0,
+                    ...(r.colors?.secondary_color !== undefined ? { secondary_color: r.colors.secondary_color } : {}),
+                    ...(r.colors?.tertiary_color !== undefined ? { tertiary_color: r.colors.tertiary_color } : {})
+                };
                 created = await apiPost(`/guilds/${cfg.dst}/roles`, alt, log);
                 createdCount++;
                 roleMap.set(r.id, created.id);
-                log(`Роль создана (альт. формат цвета): ${r.name}`, "info");
+
+                if (r.colors && (r.colors.secondary_color || r.colors.tertiary_color)) {
+                    if (!created.colors || !created.colors.secondary_color) {
+                        const warnGradient = `Роль «${r.name}»: градиент не сохранен целевым сервером (применен одиночный цвет)`;
+                        log(`[Стили ролей] ${warnGradient}`, "warn");
+                        warnings.push(warnGradient);
+                    }
+                }
+
+                log(`Роль создана (альт. формат colors): ${r.name}`, "info");
             } catch (e2) {
                 const m = `Роль «${r.name}» не создана: ${errMsg(e2)}`;
                 log(m, "error");

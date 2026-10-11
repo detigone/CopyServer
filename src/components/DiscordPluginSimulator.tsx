@@ -227,11 +227,16 @@ export function DiscordPluginSimulator() {
       await new Promise(r => setTimeout(r, 250));
 
       const mockRolesList = [
-        { name: 'Admin [Администратор]', managed: false },
-        { name: 'Moderator', managed: false },
-        { name: 'VIP Supporter', managed: false },
+        { name: 'Admin [Администратор]', managed: false, colors: { primary_color: 0xed4245 } },
+        { name: 'Moderator', managed: false, colors: { primary_color: 0x5865f2 } },
+        {
+          name: 'VIP Holographic Gradient',
+          managed: false,
+          colors: { primary_color: 0x9b59b6, secondary_color: 0x3498db, tertiary_color: 0x1abc9c },
+          isGradient: true
+        },
         { name: 'Bot Integration Role', managed: true }, // Should be skipped
-        { name: 'Community Member', managed: false }
+        { name: 'Community Member', managed: false, colors: { primary_color: 0x2ecc71 } }
       ];
 
       rolesMetrics.expected = 4; // Excluding managed bot role
@@ -250,7 +255,23 @@ export function DiscordPluginSimulator() {
         setProgressStep(`Создание ролей (${rolesMetrics.created + 1}/${rolesMetrics.expected}): ${rItem.name}`);
 
         await new Promise(r => setTimeout(r, 260));
-        addLog(`Роль создана: ${rItem.name}`, 'info');
+
+        if (rItem.isGradient) {
+          addLog(`Роль создана с палитрой colors (primary, secondary, tertiary): ${rItem.name}`, 'info');
+          // Валидация: проверка поддержки градиентного стиля целевым сервером
+          const warnGrad = `Роль «${rItem.name}»: градиентный/голографический стиль не поддерживается целевым сервером (сохранен базовый цвет primary)`;
+          addLog(`[Стили ролей] ${warnGrad}`, 'warn');
+          warningsList.push(warnGrad);
+          reviewsList.push({
+            type: 'role',
+            name: rItem.name,
+            reason: 'Целевой сервер Discord отклонил расширенный градиент (secondary/tertiary colors)',
+            actionRequired: 'Проверить уровень буста (Server Boost) целевого сервера или настроить градиент вручную'
+          });
+        } else {
+          addLog(`Роль создана: ${rItem.name}`, 'info');
+        }
+
         rolesMetrics.created++;
         rolesMetrics.verified++;
       }
