@@ -422,7 +422,7 @@ module.exports = class CopyServer {
         return mod?.getToken?.();
     }
 
-    async api(method, path, body, isForm = false, log = null) {
+    async api(method, path, body, isForm = false, log = null, silentAuthError = false) {
         const token = this.getToken();
         if (!token) throw new Error("Не удалось получить токен авторизации Discord");
         const headers = { Authorization: token };
@@ -437,10 +437,12 @@ module.exports = class CopyServer {
                 body: body === undefined ? undefined : isForm ? body : JSON.stringify(body),
             });
 
-            // Блокирующие ошибки прав/авторизации — не повторять вслепую
+            // Ошибки авторизации и прав передаем с кодом для работы smart fallback
             if (res.status === 401 || res.status === 403) {
-                const msg = `[Блокирующая ошибка ${res.status}] Недостаточно прав или недействительный токен (${path})`;
-                log?.(msg, "error");
+                const msg = `[Ошибка прав ${res.status}] Недостаточно прав или 2FA на сервере (${path})`;
+                if (!silentAuthError) {
+                    log?.(msg, "error");
+                }
                 const err = new Error(msg);
                 err.status = res.status;
                 throw err;
@@ -448,8 +450,8 @@ module.exports = class CopyServer {
 
             if (res.status === 429) {
                 const j = await res.json().catch(() => ({}));
-                const retryAfter = j.retry_after ?? (Number(res.headers?.get?.("retry-after")) || 2.0);
-                const waitMs = Math.ceil(retryAfter * 1000) + humanJitter(600, 400);
+                const retryAfter = j.retry_after ?? (Number(res.headers?.get?.("retry-after")) || 1.2);
+                const waitMs = Math.ceil(retryAfter * 1000) + 50;
                 log?.(`[Рейтлимит 429] Ожидание ${Math.round(waitMs / 1000)}с перед повтором...`, "warn");
                 await sleep(waitMs);
                 continue;
@@ -512,9 +514,11 @@ module.exports = class CopyServer {
         return res;
     }
 
-    async purgeGuild(guildId, log = null, onProgress = null) {
+    async purgeGuild(guildId, log = null, onProgress = null, stealthMode = false) {
         log?.(`[ОЧИСТКА] Запуск удаления содержимого сервера ID: ${guildId}...`, "warn");
         onProgress?.("Получение списка каналов для очистки...", 10);
+
+        const deleteDelay = stealthMode ? humanJitter(300, 200) : 25;
 
         // 1. Каналы и категории (сначала обычные каналы, потом категории)
         const channels = (await this.api("GET", `/guilds/${guildId}/channels`, undefined, false, log)) || [];
@@ -524,13 +528,13 @@ module.exports = class CopyServer {
             const ch = sortedChannels[i];
             onProgress?.(`Удаление каналов (${i + 1}/${sortedChannels.length})...`, 15 + Math.round((i / Math.max(1, sortedChannels.length)) * 40));
             try {
-                await this.api("DELETE", `/channels/${ch.id}`, undefined, false, log);
+                await this.api("DELETE", `/channels/${ch.id}`, undefined, false, log, true);
                 channelsDeleted++;
                 log?.(`Удален канал: ${ch.name}`, "info");
             } catch (e) {
                 log?.(`Не удалось удалить канал ${ch.name}: ${e.message}`, "warn");
             }
-            await sleep(humanJitter(300, 200));
+            await sleep(deleteDelay);
         }
 
         // 2. Пользовательские роли (кроме @everyone и managed бот-ролей)
@@ -542,13 +546,13 @@ module.exports = class CopyServer {
             const r = customRoles[i];
             onProgress?.(`Удаление ролей (${i + 1}/${customRoles.length})...`, 65 + Math.round((i / Math.max(1, customRoles.length)) * 25));
             try {
-                await this.api("DELETE", `/guilds/${guildId}/roles/${r.id}`, undefined, false, log);
+                await this.api("DELETE", `/guilds/${guildId}/roles/${r.id}`, undefined, false, log, true);
                 rolesDeleted++;
                 log?.(`Удалена роль: ${r.name}`, "info");
             } catch (e) {
                 log?.(`Не удалось удалить роль ${r.name}: ${e.message}`, "warn");
             }
-            await sleep(humanJitter(300, 200));
+            await sleep(deleteDelay);
         }
 
         // 3. Эмодзи
@@ -558,13 +562,13 @@ module.exports = class CopyServer {
         for (let i = 0; i < emojis.length; i++) {
             const em = emojis[i];
             try {
-                await this.api("DELETE", `/guilds/${guildId}/emojis/${em.id}`, undefined, false, log);
+                await this.api("DELETE", `/guilds/${guildId}/emojis/${em.id}`, undefined, false, log, true);
                 emojisDeleted++;
                 log?.(`Удален эмодзи: :${em.name}:`, "info");
             } catch (e) {
                 log?.(`Не удалось удалить эмодзи :${em.name}:: ${e.message}`, "warn");
             }
-            await sleep(humanJitter(200, 150));
+            await sleep(stealthMode ? humanJitter(200, 150) : 25);
         }
 
         onProgress?.("Сервер очищен!", 100);
@@ -1397,7 +1401,8 @@ module.exports = class CopyServer {
 
             let created = null;
             try {
-                created = await this.api("POST", `/guilds/${cfg.dst}/roles`, body, false, log);
+                // Попытка 1: Создание роли со всеми стилями и правами (silent 403)
+                created = await this.api("POST", `/guilds/${cfg.dst}/roles`, body, false, log, true);
                 createdCount++;
                 roleMap.set(r.id, created.id);
 
@@ -1410,6 +1415,12 @@ module.exports = class CopyServer {
                             type: "role",
                             name: r.name,
                             id: r.id,
+                            details: {
+                                permissionsBitfield: r.permissions,
+                                color: r.color,
+                                hoist: r.hoist,
+                                mentionable: r.mentionable
+                            },
                             reason: "Целевой сервер не поддерживает градиентный/голографический цвет",
                             actionRequired: "Настроить премиум-бусты сервера или задать цвет вручную"
                         });
@@ -1418,44 +1429,107 @@ module.exports = class CopyServer {
 
                 log(`Роль создана: ${r.name}`, "info");
             } catch (e) {
-                try {
-                    const alt = { ...body };
-                    delete alt.color;
-                    alt.colors = {
-                        primary_color: r.colors?.primary_color ?? r.color ?? 0,
-                        ...(r.colors?.secondary_color !== undefined ? { secondary_color: r.colors.secondary_color } : {}),
-                        ...(r.colors?.tertiary_color !== undefined ? { tertiary_color: r.colors.tertiary_color } : {})
-                    };
-                    created = await this.api("POST", `/guilds/${cfg.dst}/roles`, alt, false, log);
-                    createdCount++;
-                    roleMap.set(r.id, created.id);
+                const is403 = e?.status === 403 || String(e?.message).includes("403") || String(e?.message).includes("Missing Permissions");
 
-                    if (r.colors && (r.colors.secondary_color || r.colors.tertiary_color)) {
-                        if (!created.colors || !created.colors.secondary_color) {
-                            const warnGrad = `Роль «${r.name}»: градиент не сохранен (применен монохромный цвет)`;
-                            log(`[Стили ролей] ${warnGrad}`, "warn");
-                            warnings.push(warnGrad);
+                // Попытка 2: Обход ошибки 403 (Discord запрещает выдачу повышенных прав без прав владельца/2FA)
+                // Создаем роль с безопасными нейтральными правами (permissions: "0")
+                if (is403) {
+                    try {
+                        const safeBody = {
+                            name: r.name,
+                            color: r.color || 0,
+                            hoist: !!r.hoist,
+                            mentionable: !!r.mentionable,
+                            permissions: "0" // Нейтральные права позволяют создать роль без 403
+                        };
+                        created = await this.api("POST", `/guilds/${cfg.dst}/roles`, safeBody, false, log, true);
+                        createdCount++;
+                        roleMap.set(r.id, created.id);
+                        log(`[403 Обход] Роль «${r.name}» создана с базовыми правами (повышенные права требуют назначения владельцем сервера)`, "info");
+
+                        // Пытаемся применить разрешенные права без администратора и 2FA
+                        try {
+                            const ELEVATED_MASK = 8n | 32n | 268435456n | 16n | 2n | 4n | 536870912n | 1073741824n | 131072n | 1099511627776n | 8192n;
+                            const safePermsBig = BigInt(r.permissions || "0") & ~ELEVATED_MASK;
+                            if (safePermsBig > 0n) {
+                                await this.api("PATCH", `/guilds/${cfg.dst}/roles/${created.id}`, { permissions: safePermsBig.toString() }, false, log, true);
+                                log(`[Права] Для роли «${r.name}» применены безопасные разрешения`, "info");
+                            }
+                        } catch { /* игнорируем ошибку патча */ }
+
+                        manualReviews.push({
+                            type: "role",
+                            name: r.name,
+                            id: r.id,
+                            details: {
+                                permissionsBitfield: r.permissions,
+                                color: r.color,
+                                hoist: r.hoist,
+                                mentionable: r.mentionable
+                            },
+                            reason: "Discord 403 Forbidden: повышенные права требуют назначения владельцем сервера",
+                            actionRequired: "Открыть настройки сервера -> Роли -> Назначить права роли вручную"
+                        });
+                    } catch {
+                        // Переход к попытке 3
+                    }
+                }
+
+                // Попытка 3: Упрощенная роль
+                if (!created) {
+                    try {
+                        const alt = {
+                            name: r.name.slice(0, 100),
+                            color: r.color || 0,
+                            permissions: "0"
+                        };
+                        created = await this.api("POST", `/guilds/${cfg.dst}/roles`, alt, false, log, true);
+                        createdCount++;
+                        roleMap.set(r.id, created.id);
+                        log(`Роль создана (упрощенная): ${r.name}`, "info");
+                        manualReviews.push({
+                            type: "role",
+                            name: r.name,
+                            id: r.id,
+                            details: { permissionsBitfield: r.permissions, color: r.color },
+                            reason: `Отклонены специфичные стили роли: ${e.message}`,
+                            actionRequired: "Проверить настройки роли на сервере"
+                        });
+                    } catch (e3) {
+                        // Попытка 4: Минимальная роль
+                        try {
+                            created = await this.api("POST", `/guilds/${cfg.dst}/roles`, { name: r.name.slice(0, 100), permissions: "0" }, false, log, true);
+                            createdCount++;
+                            roleMap.set(r.id, created.id);
+                            log(`Роль создана (минимальная): ${r.name}`, "info");
+                            manualReviews.push({
+                                type: "role",
+                                name: r.name,
+                                id: r.id,
+                                details: { permissionsBitfield: r.permissions, color: r.color },
+                                reason: `Создана минимальная роль из-за ограничений Discord: ${e3.message}`,
+                                actionRequired: "Настроить цвет и права вручную"
+                            });
+                        } catch (eFinal) {
+                            failedCount++;
+                            const msg = `Роль «${r.name}» не создана: ${eFinal.message}`;
+                            log(msg, "error");
+                            errors.push(msg);
+                            manualReviews.push({
+                                type: "role",
+                                name: r.name,
+                                id: r.id,
+                                details: { permissionsBitfield: r.permissions, color: r.color, hoist: r.hoist },
+                                reason: eFinal.message,
+                                actionRequired: "Создать роль вручную"
+                            });
+                            continue;
                         }
                     }
-
-                    log(`Роль создана (альт. colors): ${r.name}`, "info");
-                } catch (e2) {
-                    failedCount++;
-                    const msg = `Роль «${r.name}» не создана: ${e2.message}`;
-                    log(msg, "error");
-                    errors.push(msg);
-                    manualReviews.push({
-                        type: "role",
-                        name: r.name,
-                        id: r.id,
-                        reason: e2.message,
-                        actionRequired: "Создать роль вручную"
-                    });
-                    continue;
                 }
             }
 
-            const delay = cfg.stealthMode ? humanJitter(1000, 500) : humanJitter(400, 200);
+            const delay = cfg.stealthMode ? humanJitter(1000, 500) : 35;
             await sleep(delay);
 
             if (cfg.stealthMode && idx % 8 === 0) {
@@ -1541,7 +1615,7 @@ module.exports = class CopyServer {
                 });
             }
 
-            const delay = cfg.stealthMode ? humanJitter(1400, 600) : humanJitter(600, 300);
+            const delay = cfg.stealthMode ? humanJitter(1400, 600) : 60;
             await sleep(delay);
         }
 
@@ -1768,50 +1842,111 @@ module.exports = class CopyServer {
             } catch (e) {
                 let recovered = false;
 
-                // Если канал объявлений (type 5) или специальный канал не создается из-за отсутствия режима Community
+                // 1. Адаптация специальных каналов (5 -> 0, 13 -> 2, 15 -> 0, 16 -> 0)
                 if (ch.type === 5 || ch.type === 13 || ch.type === 15 || ch.type === 16) {
                     try {
-                        const fallbackBody = { ...full, type: 0 };
+                        const fallbackType = ch.type === 13 ? 2 : 0;
+                        const fallbackBody = { ...full, type: fallbackType };
                         delete fallbackBody.available_tags;
                         delete fallbackBody.default_reaction_emoji;
                         delete fallbackBody.default_sort_order;
                         delete fallbackBody.default_forum_layout;
-                        delete fallbackBody.bitrate;
-                        delete fallbackBody.user_limit;
-                        delete fallbackBody.rtc_region;
+                        if (fallbackType === 0) {
+                            delete fallbackBody.bitrate;
+                            delete fallbackBody.user_limit;
+                            delete fallbackBody.rtc_region;
+                        }
 
-                        created = await this.api("POST", `/guilds/${cfg.dst}/channels`, fallbackBody, false, log);
+                        created = await this.api("POST", `/guilds/${cfg.dst}/channels`, fallbackBody, false, log, true);
                         idMap.set(ch.id, created.id);
                         createdCount++;
                         recovered = true;
 
                         const typeName = ch.type === 5 ? "Объявления" : (SUPPORTED_CHANNEL_TYPES[ch.type]?.name ?? "Специальный канал");
-                        const warnMsg = `[Адаптация типа канала] Канал «${ch.name}» (${typeName}) создан как обычный Текстовый канал (сервер не поддерживает тип или отключена функция Сообщества). Все права, темы и категории сохранены.`;
+                        const targetName = fallbackType === 2 ? "Голосовой канал" : "Текстовый канал";
+                        const warnMsg = `[Адаптация канала] «${ch.name}» (${typeName}) создан как ${targetName} (сервер не поддерживает тип или отключена функция Сообщества).`;
                         log(warnMsg, "warn");
                         warnings.push(warnMsg);
                         manualReviews.push({
                             type: "channel",
                             name: ch.name,
                             id: ch.id,
-                            reason: `Канал ${typeName} адаптирован в обычный текстовый канал (отсутствует функция Сообщества)`,
-                            actionRequired: "Включить функцию Сообщества в настройках сервера, если требуются настоящие каналы Объявлений"
+                            details: {
+                                channelType: ch.type,
+                                channelTypeName: typeName,
+                                topic: ch.topic,
+                                parentCategory: ch.parent_id && categoryMap.has(ch.parent_id) ? categoryMap.get(ch.parent_id).name : undefined,
+                                overwritesCount: ch.permission_overwrites?.length || 0
+                            },
+                            reason: `Канал типа ${typeName} адаптирован в ${targetName} (отсутствует функция Сообщества)`,
+                            actionRequired: "Включить функцию Сообщества в настройках сервера, если требуются каналы данного типа"
                         });
-                    } catch (fallbackErr) {
-                        // Fallback to minimal
+                    } catch {
+                        // Переход к попытке создания без permission_overwrites
                     }
                 }
 
+                // 2. Попытка создания без permission_overwrites (частая причина 400/403 в Discord API)
                 if (!recovered) {
                     try {
-                        const minimal = { name: ch.name, type: ch.type === 5 ? 0 : ch.type, position: full.position };
-                        if (full.parent_id) minimal.parent_id = full.parent_id;
-                        if (full.permission_overwrites) minimal.permission_overwrites = full.permission_overwrites;
-                        if (full.topic) minimal.topic = full.topic;
-                        created = await this.api("POST", `/guilds/${cfg.dst}/channels`, minimal, false, log);
+                        const noOwsBody = { ...full, type: (ch.type === 5 || ch.type === 15 || ch.type === 16) ? 0 : ch.type };
+                        delete noOwsBody.permission_overwrites;
+                        if (noOwsBody.type === 0) {
+                            delete noOwsBody.bitrate;
+                            delete noOwsBody.user_limit;
+                            delete noOwsBody.rtc_region;
+                        }
+
+                        created = await this.api("POST", `/guilds/${cfg.dst}/channels`, noOwsBody, false, log, true);
                         idMap.set(ch.id, created.id);
                         createdCount++;
-                        const typeLabel = ch.type === 5 ? "Текстовый (вместо Объявлений)" : (SUPPORTED_CHANNEL_TYPES[ch.type]?.name ?? "Канал");
-                        log(`[${typeLabel}] Создан (упрощенный): ${ch.name}`, "info");
+                        recovered = true;
+                        log(`[Права] Канал «${ch.name}» создан без начальных прав (применяем права по отдельности)...`, "info");
+
+                        // Применяем права по одному
+                        if (full.permission_overwrites?.length) {
+                            for (const ow of full.permission_overwrites) {
+                                try {
+                                    await this.api("PUT", `/channels/${created.id}/permissions/${ow.id}`, {
+                                        type: ow.type,
+                                        allow: ow.allow,
+                                        deny: ow.deny
+                                    }, false, log, true);
+                                } catch { /* одиночный сбой не ломает канал */ }
+                            }
+                        }
+                    } catch {
+                        // Переход к попытке в корне
+                    }
+                }
+
+                // 3. Попытка создания в корне сервера (без parent_id)
+                if (!recovered) {
+                    try {
+                        const rootBody = {
+                            name: ch.name.slice(0, 100),
+                            type: (ch.type === 5 || ch.type === 15 || ch.type === 16) ? 0 : ch.type,
+                            position: full.position
+                        };
+                        if (full.topic) rootBody.topic = full.topic.slice(0, 1024);
+                        created = await this.api("POST", `/guilds/${cfg.dst}/channels`, rootBody, false, log, true);
+                        idMap.set(ch.id, created.id);
+                        createdCount++;
+                        recovered = true;
+                        log(`[В корне] Канал «${ch.name}» создан в корне сервера (без родительской категории)`, "info");
+                        manualReviews.push({
+                            type: "channel",
+                            name: ch.name,
+                            id: ch.id,
+                            details: {
+                                channelType: ch.type,
+                                channelTypeName: SUPPORTED_CHANNEL_TYPES[ch.type]?.name ?? "Канал",
+                                topic: ch.topic,
+                                parentCategory: ch.parent_id && categoryMap.has(ch.parent_id) ? categoryMap.get(ch.parent_id).name : undefined
+                            },
+                            reason: "Канал создан в корне сервера из-за ошибки Discord API с категорией или правами",
+                            actionRequired: "Вручную переместить канал в нужную категорию"
+                        });
                     } catch (e2) {
                         log(`Канал «${ch.name}» не создан: ${e2.message}`, "warn");
                         failedChannels.push(ch);
@@ -1819,7 +1954,7 @@ module.exports = class CopyServer {
                 }
             }
 
-            const delay = cfg.stealthMode ? humanJitter(1100, 500) : humanJitter(450, 200);
+            const delay = cfg.stealthMode ? humanJitter(1100, 500) : 35;
             await sleep(delay);
 
             if (cfg.stealthMode && idx % 7 === 0) {
@@ -1834,13 +1969,13 @@ module.exports = class CopyServer {
             for (const ch of failedChannels) {
                 if (this.aborted) break;
                 try {
-                    const retryType = ch.type === 5 ? 0 : ch.type;
-                    const minimal = { name: ch.name, type: retryType };
+                    const retryType = (ch.type === 5 || ch.type === 15 || ch.type === 16) ? 0 : ch.type;
+                    const minimal = { name: ch.name.slice(0, 100), type: retryType };
                     if (ch.parent_id && idMap.has(ch.parent_id)) minimal.parent_id = idMap.get(ch.parent_id);
-                    const created = await this.api("POST", `/guilds/${cfg.dst}/channels`, minimal, false, log);
+                    const created = await this.api("POST", `/guilds/${cfg.dst}/channels`, minimal, false, log, true);
                     idMap.set(ch.id, created.id);
                     createdCount++;
-                    const note = ch.type === 5 ? " (адаптирован как текстовый)" : "";
+                    const note = retryType === 0 && ch.type !== 0 ? " (адаптирован как текстовый)" : "";
                     log(`[Восстановлен] Канал «${ch.name}» успешно создан${note}`, "success");
                 } catch (retryErr) {
                     failedCount++;
@@ -1851,11 +1986,18 @@ module.exports = class CopyServer {
                         type: ch.type === 4 ? "category" : "channel",
                         name: ch.name,
                         id: ch.id,
+                        details: {
+                            channelType: ch.type,
+                            channelTypeName: SUPPORTED_CHANNEL_TYPES[ch.type]?.name ?? (ch.type === 4 ? "Категория" : "Канал"),
+                            topic: ch.topic,
+                            parentCategory: ch.parent_id && categoryMap.has(ch.parent_id) ? categoryMap.get(ch.parent_id).name : undefined,
+                            overwritesCount: ch.permission_overwrites?.length || 0
+                        },
                         reason: retryErr.message,
                         actionRequired: "Создать вручную в настройках сервера"
                     });
                 }
-                await sleep(cfg.stealthMode ? 1200 : 500);
+                await sleep(cfg.stealthMode ? 1200 : 35);
             }
         }
 

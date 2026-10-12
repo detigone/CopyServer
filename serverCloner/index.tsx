@@ -82,6 +82,79 @@ export interface AuditItemReview {
     id?: string;
     reason: string;
     actionRequired: string;
+    details?: {
+        permissionsBitfield?: string;
+        permissionsList?: string[];
+        color?: number;
+        colorHex?: string;
+        hoist?: boolean;
+        mentionable?: boolean;
+        channelType?: number;
+        channelTypeName?: string;
+        parentCategory?: string;
+        topic?: string;
+        nsfw?: boolean;
+        bitrate?: number;
+        userLimit?: number;
+        overwritesCount?: number;
+        emojiName?: string;
+        imageUrl?: string;
+    };
+    resolved?: boolean;
+}
+
+// Битовая маска повышенных прав Discord, вызывающих 403 Forbidden при нехватке прав или отсутствии 2FA
+export const ELEVATED_PERMS_BITMASK = (
+    (1n << 3n) |   // ADMINISTRATOR (8)
+    (1n << 5n) |   // MANAGE_GUILD (32)
+    (1n << 28n) |  // MANAGE_ROLES (268435456)
+    (1n << 4n) |   // MANAGE_CHANNELS (16)
+    (1n << 1n) |   // KICK_MEMBERS (2)
+    (1n << 2n) |   // BAN_MEMBERS (4)
+    (1n << 29n) |  // MANAGE_WEBHOOKS (536870912)
+    (1n << 30n) |  // MANAGE_GUILD_EXPRESSIONS / EMOJIS (1073741824)
+    (1n << 17n) |  // MENTION_EVERYONE (131072)
+    (1n << 40n) |  // MODERATE_MEMBERS (TIMEOUT) (1099511627776)
+    (1n << 13n)    // MANAGE_MESSAGES (8192)
+);
+
+export const DISCORD_PERMISSION_NAMES: Record<string, string> = {
+    "8": "Администратор (ADMINISTRATOR)",
+    "32": "Управление сервером (MANAGE_GUILD)",
+    "268435456": "Управление ролями (MANAGE_ROLES)",
+    "16": "Управление каналами (MANAGE_CHANNELS)",
+    "2": "Выгонять участников (KICK_MEMBERS)",
+    "4": "Банить участников (BAN_MEMBERS)",
+    "131072": "Упоминание @everyone (MENTION_EVERYONE)",
+    "8192": "Управление сообщениями (MANAGE_MESSAGES)",
+    "536870912": "Управление вебхуками (MANAGE_WEBHOOKS)",
+    "1073741824": "Управление эмодзи и стикерами",
+    "1099511627776": "Таймаут участников (MODERATE_MEMBERS)",
+    "1": "Создание приглашений (CREATE_INSTANT_INVITE)",
+    "1024": "Просмотр каналов (VIEW_CHANNEL)",
+    "2048": "Отправка сообщений (SEND_MESSAGES)",
+    "16384": "Встраивание ссылок (EMBED_LINKS)",
+    "32768": "Прикрепление файлов (ATTACH_FILES)",
+    "65536": "История сообщений (READ_MESSAGE_HISTORY)",
+    "1048576": "Подключение к голосу (CONNECT)",
+    "2097152": "Разговор в голосе (SPEAK)",
+};
+
+export function getHumanReadablePermissions(bitfieldStr?: string): string[] {
+    if (!bitfieldStr) return [];
+    try {
+        const bits = BigInt(bitfieldStr);
+        const result: string[] = [];
+        for (const [key, name] of Object.entries(DISCORD_PERMISSION_NAMES)) {
+            const flag = BigInt(key);
+            if ((bits & flag) === flag) {
+                result.push(name);
+            }
+        }
+        return result;
+    } catch {
+        return [];
+    }
 }
 
 export interface ObjectMetrics {
@@ -122,9 +195,15 @@ function errMsg(e: any): string {
 }
 
 /**
- * Обертка над RestAPI с соблюдением рейтлимитов (HTTP 429) и защитой от бесконечных повторов
+ * Обертка над RestAPI с поддержкой put, соблюдением рейтлимитов (HTTP 429) и передачей ошибок 403 в обработчик
  */
-async function apiRequest(method: "get" | "post" | "patch" | "del", url: string, body?: any, log?: LogFn): Promise<any> {
+async function apiRequest(
+    method: "get" | "post" | "patch" | "del" | "put",
+    url: string,
+    body?: any,
+    log?: LogFn,
+    silentAuthError: boolean = false
+): Promise<any> {
     const maxRetries = 5;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
@@ -135,30 +214,38 @@ async function apiRequest(method: "get" | "post" | "patch" | "del", url: string,
                 res = await RestAPI.post({ url, body });
             } else if (method === "patch") {
                 res = await RestAPI.patch({ url, body });
+            } else if (method === "put") {
+                res = await (RestAPI.put ? RestAPI.put({ url, body }) : (RestAPI as any).post?.({ url, body }));
             } else if (method === "del") {
                 res = await (RestAPI.del ? RestAPI.del({ url }) : (RestAPI as any).delete?.({ url }));
             }
             return res?.body ?? res;
         } catch (err: any) {
-            const status = err?.status ?? err?.body?.code;
+            const status = err?.status ?? err?.body?.code ?? err?.body?.status;
             const retryAfter = err?.body?.retry_after ?? err?.headers?.["retry-after"];
 
-            // Блокирующие ошибки авторизации и прав доступа не повторяем вслепую
+            // Блокирующие ошибки авторизации и прав доступа передаем вызывающей функции для fallback
             if (status === 401 || status === 403) {
-                const msg = `[Блокирующая ошибка ${status}] Недостаточно прав или недействительный токен на целевом сервере (${url})`;
-                log?.(msg, "error");
-                throw new Error(msg);
+                const msg = `[Ошибка прав ${status}] Недостаточно прав или 2FA на сервере (${url})`;
+                if (!silentAuthError) {
+                    log?.(msg, "error");
+                }
+                const customErr: any = new Error(msg);
+                customErr.status = status;
+                customErr.body = err?.body;
+                customErr.url = url;
+                throw customErr;
             }
 
             if (status === 429 || retryAfter != null) {
-                const waitMs = Math.ceil((Number(retryAfter) || 2.0) * 1000) + humanJitter(600, 400);
-                log?.(`[Рейтлимит Discord 429] Получен заголовок retry_after. Пауза ${Math.round(waitMs / 1000)}с перед повтором...`, "warn");
+                const waitMs = Math.ceil((Number(retryAfter) || 1.2) * 1000) + 50;
+                log?.(`[Рейтлимит Discord 429] Получен retry_after. Пауза ${Math.round(waitMs / 1000)}с перед повтором...`, "warn");
                 await sleep(waitMs);
                 continue;
             }
 
             if (status >= 500 && status < 600 && attempt < maxRetries) {
-                const backoff = attempt * 1600 + humanJitter(200, 300);
+                const backoff = attempt * 800 + humanJitter(100, 200);
                 log?.(`[Сбой шлюза Discord ${status}] Повторная попытка ${attempt}/${maxRetries} через ${backoff}мс...`, "warn");
                 await sleep(backoff);
                 continue;
@@ -170,20 +257,24 @@ async function apiRequest(method: "get" | "post" | "patch" | "del", url: string,
     throw new Error(`Превышено число попыток обращения к Discord RestAPI (${url})`);
 }
 
-async function apiGet(url: string, log?: LogFn) {
-    return apiRequest("get", url, undefined, log);
+async function apiGet(url: string, log?: LogFn, silent: boolean = false) {
+    return apiRequest("get", url, undefined, log, silent);
 }
 
-async function apiPost(url: string, body?: any, log?: LogFn) {
-    return apiRequest("post", url, body, log);
+async function apiPost(url: string, body?: any, log?: LogFn, silent: boolean = false) {
+    return apiRequest("post", url, body, log, silent);
 }
 
-async function apiPatch(url: string, body?: any, log?: LogFn) {
-    return apiRequest("patch", url, body, log);
+async function apiPatch(url: string, body?: any, log?: LogFn, silent: boolean = false) {
+    return apiRequest("patch", url, body, log, silent);
 }
 
-async function apiDel(url: string, log?: LogFn) {
-    return apiRequest("del", url, undefined, log);
+async function apiPut(url: string, body?: any, log?: LogFn, silent: boolean = false) {
+    return apiRequest("put", url, body, log, silent);
+}
+
+async function apiDel(url: string, log?: LogFn, silent: boolean = false) {
+    return apiRequest("del", url, undefined, log, silent);
 }
 
 /**
@@ -202,10 +293,13 @@ export async function createDiscordGuild(name: string, log?: LogFn): Promise<any
 export async function purgeDiscordGuild(
     guildId: string,
     log: LogFn,
-    onProgress?: ProgressFn
+    onProgress?: ProgressFn,
+    stealthMode: boolean = false
 ): Promise<{ channelsDeleted: number; rolesDeleted: number; emojisDeleted: number }> {
     log(`[ОЧИСТКА] Запуск удаления содержимого целевого сервера ID: ${guildId}...`, "warn");
     onProgress?.("Получение списка каналов для очистки...", 10);
+
+    const deleteDelay = stealthMode ? humanJitter(300, 200) : 25;
 
     // 1. Каналы и категории (сначала обычные каналы, потом категории)
     const channels = (await apiGet(`/guilds/${guildId}/channels`, log)) || [];
@@ -215,13 +309,13 @@ export async function purgeDiscordGuild(
         const ch = sortedChannels[i];
         onProgress?.(`Удаление каналов (${i + 1}/${sortedChannels.length})...`, 15 + Math.round((i / Math.max(1, sortedChannels.length)) * 40));
         try {
-            await apiDel(`/channels/${ch.id}`, log);
+            await apiDel(`/channels/${ch.id}`, log, true);
             channelsDeleted++;
             log(`Удален канал: ${ch.name}`, "info");
         } catch (e: any) {
             log(`Не удалось удалить канал ${ch.name}: ${errMsg(e)}`, "warn");
         }
-        await sleep(humanJitter(300, 200));
+        await sleep(deleteDelay);
     }
 
     // 2. Пользовательские роли (кроме @everyone и managed бот-ролей)
@@ -233,13 +327,13 @@ export async function purgeDiscordGuild(
         const r = customRoles[i];
         onProgress?.(`Удаление ролей (${i + 1}/${customRoles.length})...`, 65 + Math.round((i / Math.max(1, customRoles.length)) * 25));
         try {
-            await apiDel(`/guilds/${guildId}/roles/${r.id}`, log);
+            await apiDel(`/guilds/${guildId}/roles/${r.id}`, log, true);
             rolesDeleted++;
             log(`Удалена роль: ${r.name}`, "info");
         } catch (e: any) {
             log(`Не удалось удалить роль ${r.name}: ${errMsg(e)}`, "warn");
         }
-        await sleep(humanJitter(300, 200));
+        await sleep(deleteDelay);
     }
 
     // 3. Эмодзи
@@ -249,13 +343,13 @@ export async function purgeDiscordGuild(
     for (let i = 0; i < emojis.length; i++) {
         const em = emojis[i];
         try {
-            await apiDel(`/guilds/${guildId}/emojis/${em.id}`, log);
+            await apiDel(`/guilds/${guildId}/emojis/${em.id}`, log, true);
             emojisDeleted++;
             log(`Удален эмодзи: :${em.name}:`, "info");
         } catch (e: any) {
             log(`Не удалось удалить эмодзи :${em.name}:: ${errMsg(e)}`, "warn");
         }
-        await sleep(humanJitter(200, 150));
+        await sleep(stealthMode ? humanJitter(200, 150) : 25);
     }
 
     onProgress?.("Сервер очищен!", 100);
@@ -437,7 +531,8 @@ async function copyRoles(
 
         let created: any = null;
         try {
-            created = await apiPost(`/guilds/${cfg.dst}/roles`, body, log);
+            // Попытка 1: Создание роли со всеми стилями и правами (silent 403)
+            created = await apiPost(`/guilds/${cfg.dst}/roles`, body, log, true);
             createdCount++;
             roleMap.set(r.id, created.id);
 
@@ -451,6 +546,14 @@ async function copyRoles(
                         type: "role",
                         name: r.name,
                         id: r.id,
+                        details: {
+                            permissionsBitfield: r.permissions,
+                            permissionsList: getHumanReadablePermissions(r.permissions),
+                            color: r.color,
+                            colorHex: r.color ? `#${r.color.toString(16).padStart(6, "0")}` : undefined,
+                            hoist: !!r.hoist,
+                            mentionable: !!r.mentionable
+                        },
                         reason: "Целевой сервер Discord не сохранил вторичный/третичный цвет градиента",
                         actionRequired: "Проверить премиум-статус целевого сервера или настроить цвет вручную"
                     });
@@ -458,46 +561,126 @@ async function copyRoles(
             }
 
             log(`Роль создана: ${r.name}`, "info");
-        } catch (e) {
-            try {
-                const alt = { ...body };
-                delete alt.color;
-                // Формируем полный объект colors со всеми доступными компонентами
-                alt.colors = {
-                    primary_color: r.colors?.primary_color ?? r.color ?? 0,
-                    ...(r.colors?.secondary_color !== undefined ? { secondary_color: r.colors.secondary_color } : {}),
-                    ...(r.colors?.tertiary_color !== undefined ? { tertiary_color: r.colors.tertiary_color } : {})
-                };
-                created = await apiPost(`/guilds/${cfg.dst}/roles`, alt, log);
-                createdCount++;
-                roleMap.set(r.id, created.id);
+        } catch (e: any) {
+            const is403 = e?.status === 403 || String(e?.message).includes("403") || String(e?.message).includes("Missing Permissions");
 
-                if (r.colors && (r.colors.secondary_color || r.colors.tertiary_color)) {
-                    if (!created.colors || !created.colors.secondary_color) {
-                        const warnGradient = `Роль «${r.name}»: градиент не сохранен целевым сервером (применен одиночный цвет)`;
-                        log(`[Стили ролей] ${warnGradient}`, "warn");
-                        warnings.push(warnGradient);
+            // Попытка 2: Если Discord вернул 403 Forbidden (повышенные права администратора, модерации или требование 2FA)
+            // Создаем роль с безопасными нейтральными правами (permissions: "0"), что гарантирует создание роли в Discord!
+            if (is403) {
+                try {
+                    const safeBody: any = {
+                        name: r.name,
+                        color: r.color ?? 0,
+                        hoist: !!r.hoist,
+                        mentionable: !!r.mentionable,
+                        permissions: "0" // Нейтральные права позволяют обойти ошибку 403
+                    };
+                    created = await apiPost(`/guilds/${cfg.dst}/roles`, safeBody, log, true);
+                    createdCount++;
+                    roleMap.set(r.id, created.id);
+                    log(`[403 Обход] Роль «${r.name}» создана с базовыми правами (повышенные права требуют назначения владельцем сервера)`, "info");
+
+                    // Пытаемся применить разрешенные безопасные права без опасных флагов
+                    try {
+                        const safePermsBig = BigInt(r.permissions || "0") & ~ELEVATED_PERMS_BITMASK;
+                        if (safePermsBig > 0n) {
+                            await apiPatch(`/guilds/${cfg.dst}/roles/${created.id}`, { permissions: safePermsBig.toString() }, log, true);
+                            log(`[Права] Для роли «${r.name}» применены безопасные разрешения`, "info");
+                        }
+                    } catch { /* игнорируем, если даже безопасные флаги ограничены */ }
+
+                    manualReviews.push({
+                        type: "role",
+                        name: r.name,
+                        id: r.id,
+                        details: {
+                            permissionsBitfield: r.permissions,
+                            permissionsList: getHumanReadablePermissions(r.permissions),
+                            color: r.color,
+                            colorHex: r.color ? `#${r.color.toString(16).padStart(6, "0")}` : undefined,
+                            hoist: !!r.hoist,
+                            mentionable: !!r.mentionable
+                        },
+                        reason: "Discord 403 Forbidden: Повышенные права (Администратор/2FA) требуют назначения владельцем сервера",
+                        actionRequired: "Открыть настройки сервера -> Роли -> Назначить повышенные права роли вручную"
+                    });
+                } catch {
+                    // Переход к попытке 3
+                }
+            }
+
+            // Попытка 3: Упрощенная роль без градиентов и кастомных иконок
+            if (!created) {
+                try {
+                    const alt: any = {
+                        name: r.name.slice(0, 100),
+                        color: r.color ?? 0,
+                        permissions: "0"
+                    };
+                    created = await apiPost(`/guilds/${cfg.dst}/roles`, alt, log, true);
+                    createdCount++;
+                    roleMap.set(r.id, created.id);
+                    log(`Роль создана (упрощенная): ${r.name}`, "info");
+                    manualReviews.push({
+                        type: "role",
+                        name: r.name,
+                        id: r.id,
+                        details: {
+                            permissionsBitfield: r.permissions,
+                            permissionsList: getHumanReadablePermissions(r.permissions),
+                            color: r.color,
+                            colorHex: r.color ? `#${r.color.toString(16).padStart(6, "0")}` : undefined,
+                            hoist: !!r.hoist,
+                            mentionable: !!r.mentionable
+                        },
+                        reason: `Специфичные атрибуты отклонены сервером: ${errMsg(e)}`,
+                        actionRequired: "Вручную проверить настройки роли на сервере"
+                    });
+                } catch (e3) {
+                    // Попытка 4: Минимальная роль только с именем
+                    try {
+                        created = await apiPost(`/guilds/${cfg.dst}/roles`, { name: r.name.slice(0, 100), permissions: "0" }, log, true);
+                        createdCount++;
+                        roleMap.set(r.id, created.id);
+                        log(`Роль создана (минимальная): ${r.name}`, "info");
+                        manualReviews.push({
+                            type: "role",
+                            name: r.name,
+                            id: r.id,
+                            details: {
+                                permissionsBitfield: r.permissions,
+                                permissionsList: getHumanReadablePermissions(r.permissions),
+                                color: r.color
+                            },
+                            reason: `Создана минимальная роль из-за ограничений Discord: ${errMsg(e3)}`,
+                            actionRequired: "Вручную назначить цвет и права в настройках сервера"
+                        });
+                    } catch (eFinal) {
+                        const m = `Роль «${r.name}» не создана: ${errMsg(eFinal)}`;
+                        log(m, "error");
+                        errors.push(m);
+                        failedCount++;
+                        manualReviews.push({
+                            type: "role",
+                            name: r.name,
+                            id: r.id,
+                            details: {
+                                permissionsBitfield: r.permissions,
+                                permissionsList: getHumanReadablePermissions(r.permissions),
+                                color: r.color,
+                                hoist: r.hoist,
+                                mentionable: r.mentionable
+                            },
+                            reason: `Ошибка Discord API: ${errMsg(eFinal)}`,
+                            actionRequired: "Создать роль вручную и назначить права"
+                        });
+                        continue;
                     }
                 }
-
-                log(`Роль создана (альт. формат colors): ${r.name}`, "info");
-            } catch (e2) {
-                const m = `Роль «${r.name}» не создана: ${errMsg(e2)}`;
-                log(m, "error");
-                errors.push(m);
-                failedCount++;
-                manualReviews.push({
-                    type: "role",
-                    name: r.name,
-                    id: r.id,
-                    reason: `Ошибка Discord API: ${errMsg(e2)}`,
-                    actionRequired: "Создать роль вручную и назначить права"
-                });
-                continue;
             }
         }
 
-        const delay = cfg.stealthMode ? humanJitter(1000, 500) : humanJitter(400, 200);
+        const delay = cfg.stealthMode ? humanJitter(1000, 500) : 35;
         await sleep(delay);
 
         if (cfg.stealthMode && idx % 8 === 0) {
@@ -604,7 +787,7 @@ async function copyEmojis(
             });
         }
 
-        const delay = cfg.stealthMode ? humanJitter(1400, 600) : humanJitter(600, 300);
+        const delay = cfg.stealthMode ? humanJitter(1400, 600) : 60;
         await sleep(delay);
     }
 
@@ -892,52 +1075,111 @@ async function copyChannelsWithVerification(
         } catch (e: any) {
             let recovered = false;
 
-            // Специальная обработка каналов объявлений (type 5): если целевой сервер не является сообществом (Community),
-            // Discord API возвращает ошибку создания Announcement-канала. Создаем его в виде обычного текстового канала (type 0).
+            // Специальная обработка каналов объявлений (5), сцены (13), форумов (15), медиа (16):
             if (ch.type === 5 || ch.type === 13 || ch.type === 15 || ch.type === 16) {
                 try {
-                    const fallbackBody = { ...full, type: 0 };
-                    // Для текстового канала удаляем специфичные для форума/голоса параметры
+                    const fallbackType = ch.type === 13 ? 2 : 0;
+                    const fallbackBody = { ...full, type: fallbackType };
                     delete fallbackBody.available_tags;
                     delete fallbackBody.default_reaction_emoji;
                     delete fallbackBody.default_sort_order;
                     delete fallbackBody.default_forum_layout;
-                    delete fallbackBody.bitrate;
-                    delete fallbackBody.user_limit;
-                    delete fallbackBody.rtc_region;
+                    if (fallbackType === 0) {
+                        delete fallbackBody.bitrate;
+                        delete fallbackBody.user_limit;
+                        delete fallbackBody.rtc_region;
+                    }
 
-                    created = await apiPost(`/guilds/${cfg.dst}/channels`, fallbackBody, log);
+                    created = await apiPost(`/guilds/${cfg.dst}/channels`, fallbackBody, log, true);
                     idMap.set(ch.id, created.id);
                     createdCount++;
                     recovered = true;
 
                     const typeName = ch.type === 5 ? "Объявления" : (SUPPORTED_CHANNEL_TYPES[ch.type]?.name ?? "Специальный канал");
-                    const warnMsg = `[Адаптация типа канала] Канал «${ch.name}» (${typeName}) создан как обычный Текстовый канал (сервер не поддерживает тип или отключена функция Сообщества). Все права, темы и категории сохранены.`;
+                    const targetName = fallbackType === 2 ? "Голосовой канал" : "Текстовый канал";
+                    const warnMsg = `[Адаптация канала] «${ch.name}» (${typeName}) создан как ${targetName} (сервер не поддерживает тип или отключена функция Сообщества).`;
                     log(warnMsg, "warn");
                     warnings.push(warnMsg);
                     manualReviews.push({
                         type: "channel",
                         name: ch.name,
                         id: ch.id,
-                        reason: `Канал ${typeName} адаптирован в обычный текстовый канал (отсутствует функция Сообщества)`,
-                        actionRequired: "Включить функцию Сообщества в настройках сервера, если требуются настоящие каналы Объявлений"
+                        details: {
+                            channelType: ch.type,
+                            channelTypeName: typeName,
+                            topic: ch.topic,
+                            parentCategory: ch.parent_id && categoryMap.has(ch.parent_id) ? categoryMap.get(ch.parent_id).name : undefined,
+                            overwritesCount: ch.permission_overwrites?.length ?? 0
+                        },
+                        reason: `Канал типа ${typeName} адаптирован в ${targetName} (отсутствует функция Сообщества)`,
+                        actionRequired: "Включить функцию Сообщества в настройках сервера, если требуются каналы данного типа"
                     });
-                } catch (fallbackErr) {
-                    // Fallback to minimal
+                } catch {
+                    // Переход к попытке создания без permission_overwrites
                 }
             }
 
+            // Попытка создания без permission_overwrites (частая причина 400/403 в Discord API)
             if (!recovered) {
                 try {
-                    const minimal: any = { name: ch.name, type: ch.type === 5 ? 0 : ch.type, position: full.position };
-                    if (full.parent_id) minimal.parent_id = full.parent_id;
-                    if (full.permission_overwrites) minimal.permission_overwrites = full.permission_overwrites;
-                    if (full.topic) minimal.topic = full.topic;
-                    created = await apiPost(`/guilds/${cfg.dst}/channels`, minimal, log);
+                    const noOwsBody = { ...full, type: (ch.type === 5 || ch.type === 15 || ch.type === 16) ? 0 : ch.type };
+                    delete noOwsBody.permission_overwrites;
+                    if (noOwsBody.type === 0) {
+                        delete noOwsBody.bitrate;
+                        delete noOwsBody.user_limit;
+                        delete noOwsBody.rtc_region;
+                    }
+
+                    created = await apiPost(`/guilds/${cfg.dst}/channels`, noOwsBody, log, true);
                     idMap.set(ch.id, created.id);
                     createdCount++;
-                    const typeLabel = ch.type === 5 ? "Текстовый (вместо Объявлений)" : (SUPPORTED_CHANNEL_TYPES[ch.type]?.name ?? "Канал");
-                    log(`[${typeLabel}] Создан (упрощенный): ${ch.name}`, "info");
+                    recovered = true;
+                    log(`[Права] Канал «${ch.name}» создан без начальных прав (применяем права по отдельности)...`, "info");
+
+                    // Применяем права по одному
+                    if (full.permission_overwrites?.length) {
+                        for (const ow of full.permission_overwrites) {
+                            try {
+                                await apiPut(`/channels/${created.id}/permissions/${ow.id}`, {
+                                    type: ow.type,
+                                    allow: ow.allow,
+                                    deny: ow.deny
+                                }, log, true);
+                            } catch { /* одиночный сбой не ломает канал */ }
+                        }
+                    }
+                } catch {
+                    // Переход к попытке создания в корне
+                }
+            }
+
+            // Попытка создания в корне сервера (без parent_id)
+            if (!recovered) {
+                try {
+                    const rootBody: any = {
+                        name: ch.name.slice(0, 100),
+                        type: (ch.type === 5 || ch.type === 15 || ch.type === 16) ? 0 : ch.type,
+                        position: full.position
+                    };
+                    if (full.topic) rootBody.topic = full.topic.slice(0, 1024);
+                    created = await apiPost(`/guilds/${cfg.dst}/channels`, rootBody, log, true);
+                    idMap.set(ch.id, created.id);
+                    createdCount++;
+                    recovered = true;
+                    log(`[В корне] Канал «${ch.name}» создан в корне сервера (без родительской категории)`, "info");
+                    manualReviews.push({
+                        type: "channel",
+                        name: ch.name,
+                        id: ch.id,
+                        details: {
+                            channelType: ch.type,
+                            channelTypeName: SUPPORTED_CHANNEL_TYPES[ch.type]?.name ?? "Канал",
+                            topic: ch.topic,
+                            parentCategory: ch.parent_id && categoryMap.has(ch.parent_id) ? categoryMap.get(ch.parent_id).name : undefined
+                        },
+                        reason: "Канал создан в корне сервера из-за ошибки Discord API с категорией или правами",
+                        actionRequired: "Вручную переместить канал в нужную категорию"
+                    });
                 } catch (e2) {
                     const errStr = `Канал «${ch.name}» не создан: ${errMsg(e2)}`;
                     log(errStr, "warn");
@@ -946,7 +1188,7 @@ async function copyChannelsWithVerification(
             }
         }
 
-        const delay = cfg.stealthMode ? humanJitter(1100, 500) : humanJitter(450, 200);
+        const delay = cfg.stealthMode ? humanJitter(1100, 500) : 35;
         await sleep(delay);
 
         if (cfg.stealthMode && idx % 7 === 0) {
@@ -961,13 +1203,13 @@ async function copyChannelsWithVerification(
         for (const ch of failedChannels) {
             if (isAborted?.()) break;
             try {
-                const retryType = ch.type === 5 ? 0 : ch.type;
-                const minimal: any = { name: ch.name, type: retryType };
+                const retryType = (ch.type === 5 || ch.type === 15 || ch.type === 16) ? 0 : ch.type;
+                const minimal: any = { name: ch.name.slice(0, 100), type: retryType };
                 if (ch.parent_id && idMap.has(ch.parent_id)) minimal.parent_id = idMap.get(ch.parent_id);
-                const created = await apiPost(`/guilds/${cfg.dst}/channels`, minimal, log);
+                const created = await apiPost(`/guilds/${cfg.dst}/channels`, minimal, log, true);
                 idMap.set(ch.id, created.id);
                 createdCount++;
-                const note = ch.type === 5 ? " (адаптирован как текстовый)" : "";
+                const note = retryType === 0 && ch.type !== 0 ? " (адаптирован как текстовый)" : "";
                 log(`[Восстановлен] Канал «${ch.name}» успешно создан${note}`, "success");
             } catch (retryErr) {
                 failedCount++;
@@ -978,11 +1220,18 @@ async function copyChannelsWithVerification(
                     type: ch.type === 4 ? "category" : "channel",
                     name: ch.name,
                     id: ch.id,
-                    reason: `Ошибка создания: ${errMsg(retryErr)}`,
-                    actionRequired: "Создать вручную на целевом сервере"
+                    details: {
+                        channelType: ch.type,
+                        channelTypeName: SUPPORTED_CHANNEL_TYPES[ch.type]?.name ?? (ch.type === 4 ? "Категория" : "Канал"),
+                        topic: ch.topic,
+                        parentCategory: ch.parent_id && categoryMap.has(ch.parent_id) ? categoryMap.get(ch.parent_id).name : undefined,
+                        overwritesCount: ch.permission_overwrites?.length ?? 0
+                    },
+                    reason: `Ошибка создания Discord: ${errMsg(retryErr)}`,
+                    actionRequired: "Создать канал вручную на целевом сервере"
                 });
             }
-            await sleep(cfg.stealthMode ? 1200 : 500);
+            await sleep(cfg.stealthMode ? 1200 : 35);
         }
     }
 

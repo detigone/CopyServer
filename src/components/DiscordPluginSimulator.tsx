@@ -38,10 +38,30 @@ interface LogItem {
 }
 
 export interface AuditItemReview {
+  id?: string;
   type: 'role' | 'channel' | 'category' | 'emoji' | 'setting';
   name: string;
   reason: string;
   actionRequired: string;
+  resolved?: boolean;
+  details?: {
+    permissionsBitfield?: string;
+    permissionsList?: string[];
+    color?: number;
+    colorHex?: string;
+    hoist?: boolean;
+    mentionable?: boolean;
+    channelType?: number;
+    channelTypeName?: string;
+    parentCategory?: string;
+    topic?: string;
+    nsfw?: boolean;
+    bitrate?: number;
+    userLimit?: number;
+    overwritesCount?: number;
+    emojiName?: string;
+    imageUrl?: string;
+  };
 }
 
 export interface ObjectMetrics {
@@ -111,6 +131,10 @@ export function DiscordPluginSimulator() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [copiedLog, setCopiedLog] = useState(false);
   const [auditReport, setAuditReport] = useState<AuditReport | null>(null);
+  const [speedMode, setSpeedMode] = useState<'turbo' | 'normal' | 'stealth'>('turbo');
+  const [showUnaddedModal, setShowUnaddedModal] = useState(false);
+  const [unaddedFilter, setUnaddedFilter] = useState<'all' | 'role' | 'channel' | 'category' | 'emoji'>('all');
+  const [retryingItemId, setRetryingItemId] = useState<string | null>(null);
   const [showMatrixModal, setShowMatrixModal] = useState(false);
   const [showReviewItems, setShowReviewItems] = useState(false);
 
@@ -337,19 +361,32 @@ export function DiscordPluginSimulator() {
       await new Promise(r => setTimeout(r, 250));
 
       const mockRolesList = [
-        { name: 'Admin [Администратор]', managed: false, colors: { primary_color: 0xed4245 } },
-        { name: 'Moderator', managed: false, colors: { primary_color: 0x5865f2 } },
+        { id: 'role-admin', name: 'Admin [Администратор]', managed: false, colors: { primary_color: 0xed4245 } },
+        { id: 'role-mod', name: 'Moderator', managed: false, colors: { primary_color: 0x5865f2 } },
         {
+          id: 'role-vygovor',
+          name: '♦ · Выговор 1/3',
+          managed: false,
+          colors: { primary_color: 0xe67e22 },
+          isElevated403: true,
+          permissions: '8',
+          permissionsList: ['Администратор (ADMINISTRATOR)', 'Управление ролями', 'Управление сообщениями', 'Таймаут участников']
+        },
+        {
+          id: 'role-gradient',
           name: 'VIP Holographic Gradient',
           managed: false,
           colors: { primary_color: 0x9b59b6, secondary_color: 0x3498db, tertiary_color: 0x1abc9c },
           isGradient: true
         },
-        { name: 'Bot Integration Role', managed: true }, // Should be skipped
-        { name: 'Community Member', managed: false, colors: { primary_color: 0x2ecc71 } }
+        { id: 'role-bot', name: 'Bot Integration Role', managed: true }, // Should be skipped
+        { id: 'role-member', name: 'Community Member', managed: false, colors: { primary_color: 0x2ecc71 } }
       ];
 
-      rolesMetrics.expected = 4; // Excluding managed bot role
+      rolesMetrics.expected = 5; // Excluding managed bot role
+
+      // Скорость работы: Turbo (без задержек), Normal (стандартная), Stealth (антиспам)
+      const roleDelay = speedMode === 'turbo' ? 15 : speedMode === 'normal' ? 60 : 250;
 
       for (let i = 0; i < mockRolesList.length; i++) {
         if (abortRef.current) break;
@@ -364,19 +401,44 @@ export function DiscordPluginSimulator() {
         setProgressPercent(14 + Math.round(((i + 1) / mockRolesList.length) * 18));
         setProgressStep(`Создание ролей (${rolesMetrics.created + 1}/${rolesMetrics.expected}): ${rItem.name}`);
 
-        await new Promise(r => setTimeout(r, 260));
+        await new Promise(r => setTimeout(r, roleDelay));
 
-        if (rItem.isGradient) {
+        if (rItem.isElevated403) {
+          // Эмуляция поведения Discord API при попытке выдать права администратора/2FA
+          addLog(`[Ошибка прав 403] Недостаточно прав или 2FA на сервере (/guilds/${dstGuildId}/roles)`, 'warn');
+          addLog(`[403 Обход] Роль «${rItem.name}» создана с базовыми правами (повышенные права требуют назначения владельцем сервера)`, 'info');
+          reviewsList.push({
+            id: rItem.id,
+            type: 'role',
+            name: rItem.name,
+            reason: 'Discord 403 Forbidden: повышенные права (Администратор/2FA) требуют назначения владельцем сервера',
+            actionRequired: 'Открыть настройки сервера -> Роли -> Назначить повышенные права роли вручную',
+            details: {
+              colorHex: '#e67e22',
+              color: 0xe67e22,
+              permissionsBitfield: '8',
+              permissionsList: rItem.permissionsList,
+              hoist: true,
+              mentionable: false
+            }
+          });
+        } else if (rItem.isGradient) {
           addLog(`Роль создана с палитрой colors (primary, secondary, tertiary): ${rItem.name}`, 'info');
           // Валидация: проверка поддержки градиентного стиля целевым сервером
           const warnGrad = `Роль «${rItem.name}»: градиентный/голографический стиль не поддерживается целевым сервером (сохранен базовый цвет primary)`;
           addLog(`[Стили ролей] ${warnGrad}`, 'warn');
           warningsList.push(warnGrad);
           reviewsList.push({
+            id: rItem.id,
             type: 'role',
             name: rItem.name,
             reason: 'Целевой сервер Discord отклонил расширенный градиент (secondary/tertiary colors)',
-            actionRequired: 'Проверить уровень буста (Server Boost) целевого сервера или настроить градиент вручную'
+            actionRequired: 'Проверить уровень буста (Server Boost) целевого сервера или настроить градиент вручную',
+            details: {
+              colorHex: '#9b59b6',
+              color: 0x9b59b6,
+              permissionsList: ['Отображение отдельно (HOIST)', 'Цветовой градиент']
+            }
           });
         } else {
           addLog(`Роль создана: ${rItem.name}`, 'info');
@@ -398,18 +460,20 @@ export function DiscordPluginSimulator() {
       const mockEmojisList = ['kekw', 'fire_dance', 'pepe_hype', 'nitro_badge'];
       emojisMetrics.expected = mockEmojisList.length;
 
+      const emojiDelay = speedMode === 'turbo' ? 20 : speedMode === 'normal' ? 80 : 280;
+
       for (let i = 0; i < mockEmojisList.length; i++) {
         if (abortRef.current) break;
         setProgressPercent(36 + Math.round(((i + 1) / mockEmojisList.length) * 16));
         setProgressStep(`Загрузка эмодзи (${i + 1}/${mockEmojisList.length}): :${mockEmojisList[i]}:`);
 
         // Simulate 429 backoff
-        if (i === 2) {
+        if (i === 2 && speedMode !== 'turbo') {
           addLog('[Рейтлимит 429] Получен заголовок retry_after=1.2s. Адаптивная пауза...', 'warn');
-          await new Promise(r => setTimeout(r, 800));
+          await new Promise(r => setTimeout(r, 400));
         }
 
-        await new Promise(r => setTimeout(r, 280));
+        await new Promise(r => setTimeout(r, emojiDelay));
         addLog(`Эмодзи перенесено: :${mockEmojisList[i]}:`, 'success');
         emojisMetrics.created++;
         emojisMetrics.verified++;
@@ -435,11 +499,11 @@ export function DiscordPluginSimulator() {
 
       // Channel definitions
       const mockChannels = [
-        { id: 'ch-1', name: '📢 announcements', catId: 'cat-1', hidden: false, topic: 'Важные анонсы сообщества' },
-        { id: 'ch-2', name: '💬 general-chat', catId: 'cat-2', hidden: false, topic: 'Основной чат' },
-        { id: 'ch-3', name: '🤖 bot-commands', catId: 'cat-2', hidden: false, topic: 'Команды ботов' },
-        { id: 'ch-4', name: '🔒 admin-log', catId: 'cat-3', hidden: true, topic: 'Секретный лог админов' },
-        { id: 'ch-5', name: '🔒 staff-voice', catId: 'cat-3', hidden: true, topic: '' },
+        { id: 'ch-1', name: '📢 announcements', catId: 'cat-1', hidden: false, topic: 'Важные анонсы сообщества', type: 5 },
+        { id: 'ch-2', name: '💬 general-chat', catId: 'cat-2', hidden: false, topic: 'Основной чат', type: 0 },
+        { id: 'ch-3', name: '🤖 bot-commands', catId: 'cat-2', hidden: false, topic: 'Команды ботов', type: 0 },
+        { id: 'ch-4', name: '🔒 admin-log', catId: 'cat-3', hidden: true, topic: 'Секретный лог админов', type: 0 },
+        { id: 'ch-5', name: '🔒 staff-voice', catId: 'cat-3', hidden: true, topic: '', type: 2 },
       ];
 
       // Build planned channels taking into account copyHiddenChannels & orphan policy
@@ -455,10 +519,13 @@ export function DiscordPluginSimulator() {
         }
       }
 
+      const catDelay = speedMode === 'turbo' ? 20 : speedMode === 'normal' ? 70 : 260;
+      const chanDelay = speedMode === 'turbo' ? 20 : speedMode === 'normal' ? 80 : 280;
+
       // Create categories
       for (const cat of activeCats) {
         if (abortRef.current) break;
-        await new Promise(r => setTimeout(r, 260));
+        await new Promise(r => setTimeout(r, catDelay));
         const badge = cat.hidden ? ' [🔒 Скрытая]' : '';
         addLog(`[Категория] Создана: ${cat.name}${badge}`, 'info');
         channelsMetrics.created++;
@@ -485,10 +552,17 @@ export function DiscordPluginSimulator() {
             const warnReloc = `Канал «${ch.name}» перенесен в корень без категории`;
             warningsList.push(warnReloc);
             reviewsList.push({
+              id: ch.id,
               type: 'channel',
               name: ch.name,
               reason: 'Родительская категория исключена, канал перемещен в корень',
-              actionRequired: 'Привязать к подходящей категории или оставить в корне'
+              actionRequired: 'Привязать к подходящей категории или оставить в корне',
+              details: {
+                channelType: ch.type,
+                channelTypeName: ch.type === 2 ? 'Голосовой' : 'Текстовый',
+                topic: ch.topic,
+                parentCategory: 'Корень (без категории)'
+              }
             });
             plannedChannels.push({ ...ch, isOrphanRoot: true });
             continue;
@@ -510,7 +584,7 @@ export function DiscordPluginSimulator() {
 
         setProgressPercent(70 + Math.round(((i + 1) / plannedChannels.length) * 16));
         setProgressStep(`Создание каналов (${channelsMetrics.created + 1}/${channelsMetrics.expected}): ${ch.name}`);
-        await new Promise(r => setTimeout(r, 280));
+        await new Promise(r => setTimeout(r, chanDelay));
 
         // Watermark validation check (Requirement 10)
         let topicDisplay = ch.topic;
@@ -520,10 +594,16 @@ export function DiscordPluginSimulator() {
             // Does not truncate silently!
             addLog(`[Водяной знак] Тема канала «${ch.name}» превышает лимит Discord (1024). Исходное описание сохранено без изменений.`, 'warn');
             reviewsList.push({
+              id: ch.id,
               type: 'channel',
               name: ch.name,
               reason: 'Превышен лимит описания канала (1024 символа)',
-              actionRequired: 'Вручную скорректировать описание в Discord'
+              actionRequired: 'Вручную скорректировать описание в Discord',
+              details: {
+                channelType: ch.type,
+                channelTypeName: 'Текстовый',
+                topic: candidateTopic
+              }
             });
           } else {
             topicDisplay = candidateTopic;
@@ -542,10 +622,17 @@ export function DiscordPluginSimulator() {
           addLog(adaptWarn, 'warn');
           warningsList.push(adaptWarn);
           reviewsList.push({
+            id: ch.id,
             type: 'channel',
             name: ch.name,
             reason: 'Канал Объявлений адаптирован в обычный текстовый канал (отсутствует функция Сообщества)',
-            actionRequired: 'Включить функцию Сообщества в настройках целевого сервера при необходимости'
+            actionRequired: 'Включить функцию Сообщества в настройках целевого сервера при необходимости',
+            details: {
+              channelType: 5,
+              channelTypeName: 'Объявления (Announcement)',
+              topic: ch.topic,
+              parentCategory: '📁 ИНФОРМАЦИЯ'
+            }
           });
         }
 
@@ -563,7 +650,7 @@ export function DiscordPluginSimulator() {
         setProgressStep('Фаза 3: Двухфазная верификация parent_id и целостности...');
         setProgressPercent(88);
         addLog('Запуск верификации: сверка GET /guilds/{dst}/channels и проверка parent_id...', 'info');
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, speedMode === 'turbo' ? 50 : 250));
 
         channelsMetrics.verified = channelsMetrics.created;
         addLog(`ВЕРИФИКАЦИЯ ЗАВЕРШЕНА: Все запланированные каналы (${channelsMetrics.verified}/${channelsMetrics.expected}) подтверждены на сервере!`, 'success');
@@ -582,7 +669,7 @@ export function DiscordPluginSimulator() {
         addLog('Настройки AFK, системных каналов и верификации применены', 'success');
         settingsOk = true;
       }
-      await new Promise(r => setTimeout(r, 350));
+      await new Promise(r => setTimeout(r, speedMode === 'turbo' ? 40 : 150));
     }
 
     const durationSec = Number(((Date.now() - startedTime) / 1000).toFixed(1));
@@ -1144,6 +1231,62 @@ export function DiscordPluginSimulator() {
             </div>
           </div>
 
+          {/* Speed Mode Selector */}
+          <div className="bg-[#1e1f22] border border-[#3f4147]/60 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Zap className="w-4 h-4 text-[#faa81a]" />
+              <div>
+                <span className="text-xs font-bold text-white block">Режим скорости переноса:</span>
+                <span className="text-[11px] text-[#949ba4]">
+                  {speedMode === 'turbo'
+                    ? '⚡ Турбо (без задержек, 15-20мс на объект — моментальное копирование)'
+                    : speedMode === 'normal'
+                    ? '⚙️ Сбалансированный (60-80мс между запросами)'
+                    : '🛡️ Stealth (антиспам защита с джиттером 250мс)'}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center bg-[#2b2d31] p-1 rounded-lg border border-white/5 text-xs">
+              <button
+                type="button"
+                onClick={() => setSpeedMode('turbo')}
+                disabled={isCloning}
+                className={`px-3 py-1.5 rounded font-bold transition-all ${
+                  speedMode === 'turbo'
+                    ? 'bg-[#faa81a] text-black shadow-md'
+                    : 'text-[#949ba4] hover:text-white'
+                }`}
+              >
+                ⚡ Турбо (Без задержек)
+              </button>
+              <button
+                type="button"
+                onClick={() => setSpeedMode('normal')}
+                disabled={isCloning}
+                className={`px-3 py-1.5 rounded font-bold transition-all ${
+                  speedMode === 'normal'
+                    ? 'bg-[#5865f2] text-white shadow-md'
+                    : 'text-[#949ba4] hover:text-white'
+                }`}
+              >
+                Обычный
+              </button>
+              <button
+                type="button"
+                onClick={() => setSpeedMode('stealth')}
+                disabled={isCloning}
+                className={`px-3 py-1.5 rounded font-bold transition-all ${
+                  speedMode === 'stealth'
+                    ? 'bg-[#23a55a] text-white shadow-md'
+                    : 'text-[#949ba4] hover:text-white'
+                }`}
+              >
+                🛡️ Stealth
+              </button>
+            </div>
+          </div>
+
           {/* Options Toggles */}
           <div>
             <div className="flex items-center justify-between mb-3">
@@ -1636,28 +1779,30 @@ export function DiscordPluginSimulator() {
                 </div>
 
                 {auditReport.manualReviewList.length > 0 && (
-                  <div className="mt-1 pt-2 border-t border-white/10">
-                    <button
-                      onClick={() => setShowReviewItems(!showReviewItems)}
-                      className="text-xs text-[#5865f2] hover:underline font-semibold flex items-center gap-1.5"
-                    >
-                      <AlertTriangle className="w-3.5 h-3.5 text-[#f0b232]" />
-                      <span>
-                        {showReviewItems ? 'Скрыть список ручной проверки' : `Показать объекты для ручной проверки (${auditReport.manualReviewList.length})`}
+                  <div className="mt-2 pt-3 border-t border-white/10 flex flex-wrap items-center justify-between gap-2.5">
+                    <div className="flex items-center gap-2">
+                      <span className="flex h-2.5 w-2.5 relative">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#faa81a] opacity-75" />
+                        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#faa81a]" />
                       </span>
-                    </button>
+                      <span className="text-xs font-semibold text-white">
+                        Недобавленные объекты: <strong className="text-[#faa81a]">{auditReport.manualReviewList.length} шт.</strong>
+                      </span>
+                      <span className="text-[11px] text-[#949ba4]">
+                        (роли с 403, адаптированные каналы, стили)
+                      </span>
+                    </div>
 
-                    {showReviewItems && (
-                      <div className="mt-2 bg-[#1e1f22] border border-white/10 rounded-lg p-2.5 flex flex-col gap-1.5 max-h-40 overflow-y-auto">
-                        {auditReport.manualReviewList.map((item, idx) => (
-                          <div key={idx} className="text-[11px] border-b border-white/5 pb-1">
-                            <span className="font-bold text-white">[{item.type.toUpperCase()}] {item.name}: </span>
-                            <span className="text-[#f0b232]">{item.reason}. </span>
-                            <span className="text-[#23a55a]">Действие: {item.actionRequired}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowUnaddedModal(true)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-[#faa81a]/20 hover:bg-[#faa81a]/30 text-[#faa81a] hover:text-white border border-[#faa81a]/40 rounded-lg text-xs font-bold transition-all shadow cursor-pointer"
+                      >
+                        <AlertTriangle className="w-3.5 h-3.5" />
+                        <span>Открыть список недобавленных для ручного добавления →</span>
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1776,6 +1921,364 @@ export function DiscordPluginSimulator() {
             </div>
           </div>
         </div>
+
+        {/* Modal for Unadded Items Review & Manual Addition */}
+        {showUnaddedModal && (
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fadeIn">
+            <div className="bg-[#1e1f22] border border-[#3f4147] rounded-2xl w-full max-w-3xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+              {/* Modal Header */}
+              <div className="bg-[#232428] px-6 py-4 border-b border-[#3f4147]/60 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-[#faa81a]/20 text-[#faa81a] flex items-center justify-center">
+                    <AlertTriangle className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-base font-bold text-white tracking-tight">
+                        Недобавленные объекты (Ручное добавление)
+                      </h2>
+                      <span className="text-xs font-mono font-bold px-2 py-0.5 rounded-full bg-[#faa81a]/20 text-[#faa81a]">
+                        {auditReport?.manualReviewList.length || 0}
+                      </span>
+                    </div>
+                    <p className="text-xs text-[#949ba4] mt-0.5">
+                      Роли с ошибкой прав 403, адаптированные каналы и свойства, требующие внимания владельца
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowUnaddedModal(false)}
+                  className="text-[#949ba4] hover:text-white text-lg font-bold w-8 h-8 rounded-lg hover:bg-white/5 flex items-center justify-center transition-colors cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Filter Tabs & Quick Actions Bar */}
+              <div className="px-6 py-3 bg-[#2b2d31]/80 border-b border-[#3f4147]/40 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-1.5 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setUnaddedFilter('all')}
+                    className={`px-3 py-1.5 rounded-lg font-semibold transition-all ${
+                      unaddedFilter === 'all'
+                        ? 'bg-[#5865f2] text-white shadow'
+                        : 'text-[#949ba4] hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    Все ({auditReport?.manualReviewList.length || 0})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setUnaddedFilter('role')}
+                    className={`px-3 py-1.5 rounded-lg font-semibold transition-all ${
+                      unaddedFilter === 'role'
+                        ? 'bg-[#5865f2] text-white shadow'
+                        : 'text-[#949ba4] hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    Роли ({auditReport?.manualReviewList.filter(i => i.type === 'role').length || 0})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setUnaddedFilter('channel')}
+                    className={`px-3 py-1.5 rounded-lg font-semibold transition-all ${
+                      unaddedFilter === 'channel'
+                        ? 'bg-[#5865f2] text-white shadow'
+                        : 'text-[#949ba4] hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    Каналы ({auditReport?.manualReviewList.filter(i => i.type === 'channel' || i.type === 'category').length || 0})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setUnaddedFilter('emoji')}
+                    className={`px-3 py-1.5 rounded-lg font-semibold transition-all ${
+                      unaddedFilter === 'emoji'
+                        ? 'bg-[#5865f2] text-white shadow'
+                        : 'text-[#949ba4] hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    Эмодзи ({auditReport?.manualReviewList.filter(i => i.type === 'emoji').length || 0})
+                  </button>
+                </div>
+
+                {/* Export Markdown Checklist Button */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const list = auditReport?.manualReviewList || [];
+                    const md = [
+                      `# Чеклист ручной доработки сервера: ${dstGuild?.name || 'Клон'}`,
+                      `Дата: ${new Date().toLocaleString()}`,
+                      `Исходный сервер: ${srcGuild?.name || 'N/A'} (ID: ${srcGuildId})`,
+                      `Целевой сервер: ${dstGuild?.name || 'N/A'} (ID: ${dstGuildId})`,
+                      '',
+                      '## Объекты для ручного добавления/проверки:',
+                      ...list.map((item, idx) => {
+                        const icon = item.type === 'role' ? '🛡️' : item.type === 'channel' ? '📁' : '😀';
+                        let str = `${idx + 1}. [ ] ${icon} **${item.name}** (${item.type.toUpperCase()})\n   - Причина: ${item.reason}\n   - Действие: ${item.actionRequired}`;
+                        if (item.details?.permissionsList) {
+                          str += `\n   - Права: ${item.details.permissionsList.join(', ')}`;
+                        }
+                        if (item.details?.colorHex) {
+                          str += `\n   - Цвет: ${item.details.colorHex}`;
+                        }
+                        if (item.details?.topic) {
+                          str += `\n   - Описание: ${item.details.topic}`;
+                        }
+                        return str;
+                      }),
+                      '',
+                      '---',
+                      '*Сгенерировано CopyServer Pro (Lime Systems)*'
+                    ].join('\n');
+                    navigator.clipboard.writeText(md);
+                    showToast('Чеклист в формате Markdown скопирован в буфер обмена!');
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-[#2b2d31] hover:bg-[#3f4147] text-white rounded-lg text-xs font-medium border border-white/10 transition-colors"
+                  title="Экспортировать чеклист задач для ручной проверки в Markdown"
+                >
+                  <Copy className="w-3.5 h-3.5 text-[#5865f2]" />
+                  <span>Экспорт в Markdown чеклист</span>
+                </button>
+              </div>
+
+              {/* Items List Body */}
+              <div className="p-6 overflow-y-auto flex-1 flex flex-col gap-3">
+                {(!auditReport || auditReport.manualReviewList.length === 0) ? (
+                  <div className="py-16 text-center text-[#949ba4] text-xs">
+                    <CheckCircle2 className="w-10 h-10 text-[#23a55a] mx-auto mb-2 opacity-80" />
+                    <p className="text-white font-semibold text-sm">Все объекты добавлены успешно!</p>
+                    <p className="mt-1">Нет ролей или каналов, требующих ручного вмешательства.</p>
+                  </div>
+                ) : (
+                  auditReport.manualReviewList
+                    .filter(item => {
+                      if (unaddedFilter === 'all') return true;
+                      if (unaddedFilter === 'channel') return item.type === 'channel' || item.type === 'category';
+                      return item.type === unaddedFilter;
+                    })
+                    .map((item, idx) => {
+                      const isRole = item.type === 'role';
+                      const isChannel = item.type === 'channel';
+                      const isEmoji = item.type === 'emoji';
+                      const isRetrying = retryingItemId === (item.id || item.name);
+
+                      return (
+                        <div
+                          key={idx}
+                          className={`bg-[#2b2d31] border rounded-xl p-4 flex flex-col gap-3 transition-all ${
+                            item.resolved
+                              ? 'border-[#23a55a]/40 opacity-70 bg-[#23a55a]/5'
+                              : 'border-[#3f4147] hover:border-[#5865f2]/40'
+                          }`}
+                        >
+                          {/* Card Header */}
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex items-center gap-2.5">
+                              {/* Type Icon */}
+                              <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs shrink-0 ${
+                                isRole
+                                  ? 'bg-[#e67e22]/20 text-[#e67e22]'
+                                  : isChannel
+                                  ? 'bg-[#5865f2]/20 text-[#5865f2]'
+                                  : 'bg-[#faa81a]/20 text-[#faa81a]'
+                              }`}>
+                                {isRole ? <Shield className="w-4 h-4" /> : isChannel ? <FolderTree className="w-4 h-4" /> : <Smile className="w-4 h-4" />}
+                              </div>
+
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <h3 className="font-bold text-sm text-white flex items-center gap-1.5">
+                                    {item.name}
+                                    {item.details?.colorHex && (
+                                      <span
+                                        className="w-3 h-3 rounded-full inline-block border border-black/30"
+                                        style={{ backgroundColor: item.details.colorHex }}
+                                        title={`Цвет роли: ${item.details.colorHex}`}
+                                      />
+                                    )}
+                                  </h3>
+                                  <span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded ${
+                                    isRole
+                                      ? 'bg-[#e67e22]/20 text-[#e67e22]'
+                                      : isChannel
+                                      ? 'bg-[#5865f2]/20 text-[#5865f2]'
+                                      : 'bg-[#faa81a]/20 text-[#faa81a]'
+                                  }`}>
+                                    {item.type}
+                                  </span>
+                                  {item.resolved && (
+                                    <span className="text-[10px] font-bold bg-[#23a55a]/20 text-[#23a55a] px-1.5 py-0.5 rounded flex items-center gap-1">
+                                      <Check className="w-3 h-3" /> Добавлено вручную
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-xs text-[#faa81a] mt-0.5 font-medium">
+                                  {item.reason}
+                                </p>
+                              </div>
+                            </div>
+
+                            {/* Action Buttons */}
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const payload = JSON.stringify({
+                                    name: item.name,
+                                    type: item.type,
+                                    details: item.details,
+                                    reason: item.reason,
+                                    targetServer: dstGuild?.name,
+                                  }, null, 2);
+                                  navigator.clipboard.writeText(payload);
+                                  showToast(`Параметры объекта «${item.name}» скопированы!`);
+                                }}
+                                className="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-[#dbdee1] hover:text-white text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer"
+                                title="Скопировать все параметры объекта в JSON"
+                              >
+                                <Copy className="w-3 h-3 text-[#949ba4]" />
+                                <span>Параметры</span>
+                              </button>
+
+                              {/* Retry Creation with Smart Fallback Button */}
+                              <button
+                                type="button"
+                                disabled={isRetrying || item.resolved}
+                                onClick={async () => {
+                                  setRetryingItemId(item.id || item.name);
+                                  addLog(`[Повторная попытка] Создание «${item.name}» с безопасными fallback-параметрами...`, 'info');
+                                  await new Promise(r => setTimeout(r, 450));
+
+                                  if (isRole) {
+                                    addLog(`[УСПЕХ Повтора] Роль «${item.name}» успешно создана с правами 0 на сервере «${dstGuild?.name}». Назначьте повышенные права в настройках сервера.`, 'success');
+                                  } else {
+                                    addLog(`[УСПЕХ Повтора] Канал «${item.name}» создан без проблемных перезаписей на сервере «${dstGuild?.name}».`, 'success');
+                                  }
+
+                                  // Mark as resolved
+                                  setAuditReport(prev => {
+                                    if (!prev) return prev;
+                                    return {
+                                      ...prev,
+                                      manualReviewList: prev.manualReviewList.map(it =>
+                                        (it.id === item.id && it.name === item.name) ? { ...it, resolved: true } : it
+                                      )
+                                    };
+                                  });
+                                  setRetryingItemId(null);
+                                  showToast(`Объект «${item.name}» успешно создан через fallback!`);
+                                }}
+                                className="px-2.5 py-1.5 rounded-lg bg-[#5865f2] hover:bg-[#4752c4] text-white text-xs font-semibold flex items-center gap-1 transition-colors disabled:opacity-50 cursor-pointer"
+                                title="Повторить создание объекта с безопасными правами и базовыми настройками"
+                              >
+                                <RotateCcw className={`w-3 h-3 ${isRetrying ? 'animate-spin' : ''}`} />
+                                <span>{isRetrying ? 'Создание...' : 'Повторить создание'}</span>
+                              </button>
+
+                              {/* Mark as Resolved button */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setAuditReport(prev => {
+                                    if (!prev) return prev;
+                                    return {
+                                      ...prev,
+                                      manualReviewList: prev.manualReviewList.map(it =>
+                                        (it.id === item.id && it.name === item.name) ? { ...it, resolved: !it.resolved } : it
+                                      )
+                                    };
+                                  });
+                                }}
+                                className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                                  item.resolved
+                                    ? 'bg-[#23a55a]/20 text-[#23a55a] border border-[#23a55a]/40'
+                                    : 'bg-white/5 hover:bg-white/10 text-[#949ba4] hover:text-white'
+                                }`}
+                                title="Отметить как выполненное вручную"
+                              >
+                                <Check className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Action Guidance */}
+                          <div className="bg-[#1e1f22] p-2.5 rounded-lg border border-white/5 text-xs text-[#dbdee1] flex items-center gap-2">
+                            <span className="font-bold text-[#23a55a] shrink-0">Инструкция для Discord:</span>
+                            <span>{item.actionRequired}</span>
+                          </div>
+
+                          {/* Specific Metadata Parameters */}
+                          {item.details && (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] pt-1">
+                              {item.details.permissionsBitfield && (
+                                <div className="bg-[#1e1f22]/60 p-2 rounded border border-white/5">
+                                  <span className="text-[#949ba4] block">Битмаска прав (permissions):</span>
+                                  <code className="text-[#faa81a] font-mono">{item.details.permissionsBitfield}</code>
+                                </div>
+                              )}
+
+                              {item.details.permissionsList && item.details.permissionsList.length > 0 && (
+                                <div className="bg-[#1e1f22]/60 p-2 rounded border border-white/5 sm:col-span-2">
+                                  <span className="text-[#949ba4] block mb-1">Требуемые Discord права:</span>
+                                  <div className="flex flex-wrap gap-1">
+                                    {item.details.permissionsList.map((p, pIdx) => (
+                                      <span key={pIdx} className="bg-white/5 text-white px-1.5 py-0.5 rounded text-[10px]">
+                                        {p}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {item.details.channelTypeName && (
+                                <div className="bg-[#1e1f22]/60 p-2 rounded border border-white/5">
+                                  <span className="text-[#949ba4] block">Тип канала:</span>
+                                  <span className="text-white font-medium">{item.details.channelTypeName} (type {item.details.channelType})</span>
+                                </div>
+                              )}
+
+                              {item.details.parentCategory && (
+                                <div className="bg-[#1e1f22]/60 p-2 rounded border border-white/5">
+                                  <span className="text-[#949ba4] block">Категория размещения:</span>
+                                  <span className="text-white font-medium">{item.details.parentCategory}</span>
+                                </div>
+                              )}
+
+                              {item.details.topic && (
+                                <div className="bg-[#1e1f22]/60 p-2 rounded border border-white/5 sm:col-span-2">
+                                  <span className="text-[#949ba4] block">Тема / Описание (topic):</span>
+                                  <p className="text-white font-mono break-all mt-0.5">{item.details.topic}</p>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                )}
+              </div>
+
+              {/* Modal Footer */}
+              <div className="bg-[#232428] px-6 py-3 border-t border-[#3f4147]/60 flex items-center justify-between text-xs text-[#949ba4]">
+                <span>
+                  💡 Кликните <strong>«Повторить создание»</strong> для автоматического создания с нейтральными правами, либо скопируйте <strong>«Параметры»</strong> для настройки в официальном клиенте Discord.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowUnaddedModal(false)}
+                  className="px-4 py-2 bg-[#5865f2] hover:bg-[#4752c4] text-white rounded-lg font-bold text-xs transition-colors shrink-0 cursor-pointer"
+                >
+                  Закрыть
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

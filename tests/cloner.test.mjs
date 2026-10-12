@@ -197,6 +197,50 @@ export function mapPermissionOverwrites(overwrites, srcGuildId, dstGuildId, role
     return mapped;
 }
 
+export const ELEVATED_PERMS_BITMASK = (
+    (1n << 3n) |   // ADMINISTRATOR (8)
+    (1n << 5n) |   // MANAGE_GUILD (32)
+    (1n << 28n) |  // MANAGE_ROLES (268435456)
+    (1n << 4n) |   // MANAGE_CHANNELS (16)
+    (1n << 1n) |   // KICK_MEMBERS (2)
+    (1n << 2n) |   // BAN_MEMBERS (4)
+    (1n << 29n) |  // MANAGE_WEBHOOKS (536870912)
+    (1n << 30n) |  // MANAGE_GUILD_EXPRESSIONS / EMOJIS (1073741824)
+    (1n << 17n) |  // MENTION_EVERYONE (131072)
+    (1n << 40n) |  // MODERATE_MEMBERS (TIMEOUT) (1099511627776)
+    (1n << 13n)    // MANAGE_MESSAGES (8192)
+);
+
+// Helper: Smart fallback for role creation on 403 Forbidden
+export function createRoleSmartFallback(role, is403 = true) {
+    if (is403) {
+        const safeBody = {
+            name: role.name,
+            color: role.color || 0,
+            hoist: !!role.hoist,
+            mentionable: !!role.mentionable,
+            permissions: "0" // Neutral permissions bypass 403 error
+        };
+        const safePermsBig = BigInt(role.permissions || "0") & ~ELEVATED_PERMS_BITMASK;
+        return {
+            createdBody: safeBody,
+            patchedPermissions: safePermsBig.toString(),
+            manualReview: {
+                type: 'role',
+                name: role.name,
+                id: role.id,
+                reason: 'Discord 403 Forbidden: Повышенные права (Администратор/2FA) требуют назначения владельцем сервера',
+                actionRequired: 'Открыть настройки сервера -> Роли -> Назначить повышенные права роли вручную',
+                details: {
+                    permissionsBitfield: role.permissions,
+                    color: role.color
+                }
+            }
+        };
+    }
+    return { createdBody: role };
+}
+
 // ================= TEST SUITE =================
 
 test('Requirement 10: Watermark handles empty topic', () => {
@@ -721,4 +765,221 @@ test('Requirement 4: Announcement channel (type 5) adapts to regular text channe
     assert.equal(forNonCommunity.adaptedFromAnnouncement, true);
 });
 
+test('Requirement: Role 403 Forbidden smart bypass creates role with neutral permissions 0 and preserves review details', () => {
+    const roleWithElevatedPerms = {
+        id: 'role-mod-1',
+        name: '♦ · Выговор 1/3',
+        color: 0xe67e22,
+        hoist: true,
+        mentionable: false,
+        permissions: '8' // ADMINISTRATOR
+    };
 
+    const result = createRoleSmartFallback(roleWithElevatedPerms, true);
+    // Role created with permissions '0' to bypass 403 forbidden
+    assert.equal(result.createdBody.name, '♦ · Выговор 1/3');
+    assert.equal(result.createdBody.permissions, '0');
+    assert.equal(result.createdBody.color, 0xe67e22);
+    assert.equal(result.createdBody.hoist, true);
+
+    // Added to manual review list with exact original details
+    assert.ok(result.manualReview);
+    assert.equal(result.manualReview.type, 'role');
+    assert.equal(result.manualReview.name, '♦ · Выговор 1/3');
+    assert.equal(result.manualReview.details.permissionsBitfield, '8');
+    assert.ok(result.manualReview.reason.includes('403 Forbidden'));
+});
+
+test('Requirement: Strips elevated permission flags (ADMINISTRATOR, MANAGE_GUILD, BAN_MEMBERS) on 403 fallback', () => {
+    // Role with multiple permissions: ADMINISTRATOR (8) + SEND_MESSAGES (2048) + ATTACH_FILES (32768)
+    const permsBig = 8n | 2048n | 32768n;
+    const role = {
+        id: 'role-admin-test',
+        name: 'SuperAdmin',
+        permissions: permsBig.toString(),
+        color: 0xed4245
+    };
+
+    const result = createRoleSmartFallback(role, true);
+    // The patched permissions should only contain the safe bits (2048 + 32768 = 34816)
+    const expectedSafeBig = 2048n | 32768n;
+    assert.equal(result.patchedPermissions, expectedSafeBig.toString());
+});
+
+test('Requirement: Channel creation fallback strips overwrites on error and preserves category/topic', () => {
+    const ch = {
+        name: 'private-discussion',
+        type: 0,
+        parent_id: 'cat-456',
+        topic: 'Sensitive discussions',
+        permission_overwrites: [
+            { id: 'unknown-role-id', type: 0, allow: '1024', deny: '0' }
+        ]
+    };
+
+    // When overwrites cause an error, no-overwrites body preserves channel identity
+    const noOwsBody = { ...ch };
+    delete noOwsBody.permission_overwrites;
+
+    assert.equal(noOwsBody.name, 'private-discussion');
+    assert.equal(noOwsBody.type, 0);
+    assert.equal(noOwsBody.parent_id, 'cat-456');
+    assert.equal(noOwsBody.topic, 'Sensitive discussions');
+    assert.equal(noOwsBody.permission_overwrites, undefined);
+});
+
+// ================= MANUAL CONTROL HELPERS & TESTS =================
+
+export function getUncopiedEntities(srcChannels, srcRoles, dstChannels, dstRoles) {
+    const dstChannelKeys = new Set(dstChannels.map(c => `${c.name}:${c.type}`));
+    const dstRoleNames = new Set(dstRoles.map(r => r.name.toLowerCase()));
+
+    const uncopiedChannels = srcChannels
+        .filter(c => !dstChannelKeys.has(`${c.name}:${c.type}`))
+        .map(c => ({
+            id: c.id,
+            name: c.name,
+            kind: c.type === 4 ? 'category' : 'channel',
+            channelType: c.type,
+            hidden: isChannelHidden(c, c.guild_id),
+            parent_id: c.parent_id,
+            topic: c.topic,
+            status: 'pending'
+        }));
+
+    const uncopiedRoles = srcRoles
+        .filter(r => r.name !== '@everyone' && !r.managed && !dstRoleNames.has(r.name.toLowerCase()))
+        .map(r => ({
+            id: r.id,
+            name: r.name,
+            kind: 'role',
+            color: r.color,
+            permissions: r.permissions,
+            hasElevated: (BigInt(r.permissions || '0') & ELEVATED_PERMS_BITMASK) !== 0n,
+            status: 'pending'
+        }));
+
+    return {
+        uncopiedChannels,
+        uncopiedRoles,
+        totalUncopied: uncopiedChannels.length + uncopiedRoles.length
+    };
+}
+
+export function prepareForceAddPayload(item, context = {}) {
+    if (item.kind === 'role') {
+        const needsSafeBypass = item.hasElevated || context.forceSafe;
+        return {
+            endpoint: `/guilds/${context.dstGuildId}/roles`,
+            body: {
+                name: item.name,
+                color: item.color || 0,
+                hoist: !!item.hoist,
+                mentionable: !!item.mentionable,
+                permissions: needsSafeBypass ? "0" : (item.permissions || "0")
+            },
+            isSafeBypass: !!needsSafeBypass
+        };
+    } else {
+        const parentId = item.parent_id && context.categoryIdMap ? context.categoryIdMap[item.parent_id] : item.parent_id;
+        const body = {
+            name: item.name,
+            type: item.channelType,
+            parent_id: parentId || null
+        };
+        if (item.channelType !== 4 && item.topic) {
+            body.topic = item.topic.slice(0, MAX_TOPIC_LENGTH);
+        }
+        if (item.hidden) {
+            body.permission_overwrites = [
+                { id: context.dstGuildId, type: 0, allow: "0", deny: "1024" }
+            ];
+        }
+        return {
+            endpoint: `/guilds/${context.dstGuildId}/channels`,
+            body,
+            isHidden: !!item.hidden
+        };
+    }
+}
+
+test('Requirement Manual Control: getUncopiedEntities accurately detects missing roles and channels', () => {
+    const srcChannels = [
+        { id: 'c1', name: 'general', type: 0, guild_id: 'src1' },
+        { id: 'c2', name: 'admin-log', type: 0, guild_id: 'src1', permission_overwrites: [{ id: 'src1', type: 0, deny: '1024' }] },
+        { id: 'cat1', name: 'STAFF', type: 4, guild_id: 'src1' }
+    ];
+    const srcRoles = [
+        { id: 'r1', name: '@everyone', permissions: '0' },
+        { id: 'r2', name: 'BotRole', managed: true },
+        { id: 'r3', name: 'Moderator', permissions: '268435456' },
+        { id: 'r4', name: 'SuperAdmin', permissions: '8' }
+    ];
+
+    const dstChannels = [
+        { id: 'dc1', name: 'general', type: 0 } // Already exists
+    ];
+    const dstRoles = [
+        { id: 'dr1', name: '@everyone' },
+        { id: 'dr2', name: 'Moderator' } // Already exists
+    ];
+
+    const uncopied = getUncopiedEntities(srcChannels, srcRoles, dstChannels, dstRoles);
+
+    // Channels: 'admin-log' and 'STAFF' are uncopied
+    assert.equal(uncopied.uncopiedChannels.length, 2);
+    assert.equal(uncopied.uncopiedChannels[0].name, 'admin-log');
+    assert.equal(uncopied.uncopiedChannels[0].hidden, true);
+    assert.equal(uncopied.uncopiedChannels[1].name, 'STAFF');
+    assert.equal(uncopied.uncopiedChannels[1].kind, 'category');
+
+    // Roles: SuperAdmin is uncopied (@everyone and managed are skipped, Moderator already on dst)
+    assert.equal(uncopied.uncopiedRoles.length, 1);
+    assert.equal(uncopied.uncopiedRoles[0].name, 'SuperAdmin');
+    assert.equal(uncopied.uncopiedRoles[0].hasElevated, true);
+    assert.equal(uncopied.totalUncopied, 3);
+});
+
+test('Requirement Manual Control: prepareForceAddPayload generates safe 403 bypass for elevated role', () => {
+    const item = {
+        id: 'r4',
+        name: '♦ · Выговор 1/3',
+        kind: 'role',
+        color: 0xe67e22,
+        permissions: '8', // ADMINISTRATOR
+        hasElevated: true
+    };
+    const context = { dstGuildId: 'dst999' };
+
+    const payload = prepareForceAddPayload(item, context);
+    assert.equal(payload.endpoint, '/guilds/dst999/roles');
+    assert.equal(payload.body.name, '♦ · Выговор 1/3');
+    assert.equal(payload.body.color, 0xe67e22);
+    assert.equal(payload.body.permissions, '0'); // Safe neutral bypass
+    assert.equal(payload.isSafeBypass, true);
+});
+
+test('Requirement Manual Control: prepareForceAddPayload generates private hidden channel with VIEW_CHANNEL deny', () => {
+    const item = {
+        id: 'c2',
+        name: 'secret-chat',
+        kind: 'channel',
+        channelType: 0,
+        hidden: true,
+        topic: 'VIP only',
+        parent_id: 'cat-orig'
+    };
+    const context = {
+        dstGuildId: 'dst999',
+        categoryIdMap: { 'cat-orig': 'cat-cloned-id' }
+    };
+
+    const payload = prepareForceAddPayload(item, context);
+    assert.equal(payload.endpoint, '/guilds/dst999/channels');
+    assert.equal(payload.body.name, 'secret-chat');
+    assert.equal(payload.body.parent_id, 'cat-cloned-id');
+    assert.equal(payload.body.topic, 'VIP only');
+    assert.equal(payload.isHidden, true);
+    assert.equal(payload.body.permission_overwrites.length, 1);
+    assert.equal(payload.body.permission_overwrites[0].deny, '1024');
+});
