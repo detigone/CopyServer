@@ -2921,7 +2921,7 @@ function SettingsPanel() {
             </div>
 
             {showSelectionPanel && (
-                <div style={{ background: "var(--background-secondary, #2b2d31)", border: "1px solid var(--background-modifier-accent)", borderRadius: "9px", padding: "14px", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "14px" }}>
+                <div style={{ background: "var(--background-secondary, #2b2d31)", border: "1px solid var(--background-modifier-accent)", borderRadius: "12px", padding: "16px", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: "16px" }}>
                     <div>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
                             <strong style={{ fontSize: "13px" }}>Роли ({selectedRoleIds === null ? sourceRoles.length : selectedRoleIds.length}/{sourceRoles.length})</strong>
@@ -3089,9 +3089,9 @@ function SettingsPanel() {
             {/* Special Section: Водяной знак, Stealth Mode и Скрытые каналы */}
             <div style={{
                 background: "var(--background-secondary, #2b2d31)",
-                border: "1px solid rgba(88, 101, 242, 0.2)",
-                borderRadius: "10px",
-                padding: "14px",
+                border: "1px solid rgba(130, 140, 255, 0.20)",
+                borderRadius: "12px",
+                padding: "16px",
                 display: "flex",
                 flexDirection: "column",
                 gap: "10px"
@@ -3110,7 +3110,7 @@ function SettingsPanel() {
                     <span>Безопасность аккаунта, скрытые каналы & водяной знак</span>
                 </div>
 
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "8px" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(270px, 1fr))", gap: "10px" }}>
                     <DiscordSwitch
                         checked={stealthMode}
                         onChange={setStealthMode}
@@ -3210,12 +3210,12 @@ function SettingsPanel() {
             {/* Options Switches */}
             <div>
                 <div style={{
-                    fontSize: "12px",
-                    fontWeight: 700,
+                    fontSize: "11px",
+                    fontWeight: 750,
                     textTransform: "uppercase",
-                    letterSpacing: "0.5px",
+                    letterSpacing: "0.07em",
                     color: "var(--header-secondary, #b5bac1)",
-                    marginBottom: "8px"
+                    marginBottom: "10px"
                 }}>
                     Элементы копирования (включая приватные и скрытые)
                 </div>
@@ -3286,11 +3286,12 @@ function SettingsPanel() {
                         disabled={busy}
                         style={{
                             flex: 1,
-                            padding: "12px 18px",
-                            background: busy ? "#4e5058" : "var(--brand-experiment, #5865f2)",
+                            minHeight: "48px",
+                            padding: "13px 20px",
+                            background: busy ? "#4e5058" : "linear-gradient(110deg, var(--brand-experiment, #5865f2), #6978f5)",
                             color: "#ffffff",
                             border: "none",
-                            borderRadius: "8px",
+                            borderRadius: "10px",
                             fontSize: "14px",
                             fontWeight: 700,
                             cursor: busy ? "not-allowed" : "pointer",
@@ -3339,8 +3340,8 @@ function SettingsPanel() {
                 {(busy || progressPercent > 0) && (
                     <div style={{
                         background: "var(--background-secondary, #2b2d31)",
-                        borderRadius: "8px",
-                        padding: "10px 14px",
+                        borderRadius: "10px",
+                        padding: "13px 15px",
                         border: "1px solid var(--background-modifier-accent, rgba(255,255,255,0.06))"
                     }}>
                         <div style={{
