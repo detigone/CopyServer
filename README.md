@@ -130,11 +130,11 @@ npm run build
 
 ## 📄 Structure Documents (TXT v1)
 
-CopyServer can export a server's roles, channels, categories and permission overwrites into an editable UTF-8 `.txt` document, then create a new Discord server from that document.
+The Vencord plugin settings panel can export a server's roles, channels, categories and permission overwrites into an editable UTF-8 `.txt` document, then create a new Discord server from that document.
 
 ### Workflow
 
-1. Select the source server and click **«Скачать структуру текущего сервера (.txt)»**.
+1. Open CopyServer in Vencord settings, select the source server and click **«Скачать структуру текущего сервера (.txt)»**.
 2. Edit the downloaded document in a text editor. Rename roles/channels, change category assignments, positions, role permissions and channel overwrites.
 3. Load the edited file using **«Загрузить TXT-документ»** and run **«Проверить документ»**.
 4. Click **«Создать сервер по документу»**. CopyServer creates a new guild and then rebuilds roles, categories, channels and permission overwrites in dependency order.
@@ -163,7 +163,8 @@ Discord snowflake IDs are not used as role/category references inside the docume
 - If an overwrite refers to a role that is not represented in the document, import is blocked rather than silently dropping that permission.
 - Member-specific overwrites retain the original user ID. Discord may reject them if that user cannot be referenced on the new server.
 - Announcement, forum, media and stage channel types may be adapted when the destination guild lacks the required Community features.
-- v1 creates a new server from a document. It does not merge a document into an existing populated server and does not copy messages, members, webhooks, integrations, emojis, server images or all guild-level settings.
+- v1 creates a new server from a document in the Vencord plugin. The BetterDiscord plugin does not yet expose the Structure Documents workflow.
+- It does not merge a document into an existing populated server and does not copy messages, members, webhooks, integrations, emojis, server images or all guild-level settings.
 - The importer reports partial completion if Discord rejects an object. It does not automatically delete already-created objects, so review the log before retrying.
 
 ## 🧪 Тестирование
