@@ -2448,10 +2448,17 @@ function SettingsPanel() {
         const anchor = document.createElement("a");
         anchor.href = url;
         anchor.download = filename;
+        anchor.style.display = "none";
         document.body.appendChild(anchor);
-        anchor.click();
-        document.body.removeChild(anchor);
-        URL.revokeObjectURL(url);
+
+        try {
+            anchor.click();
+        } finally {
+            anchor.remove();
+            // Discord/Vencord may process the download asynchronously.
+            // Revoking the object URL immediately can cancel the file download.
+            window.setTimeout(() => URL.revokeObjectURL(url), 2000);
+        }
     };
 
     const exportStructureDocument = async () => {
