@@ -1,0 +1,82 @@
+{
+  "format": "copyserver-structure",
+  "version": 1,
+  "exportedAt": "2026-11-01T00:00:00.000Z",
+  "guild": {
+    "name": "My Community",
+    "description": "A server created from a CopyServer structure document."
+  },
+  "roles": [
+    {
+      "key": "everyone",
+      "name": "@everyone",
+      "isEveryone": true,
+      "position": 0,
+      "permissions": "1024",
+      "color": 0,
+      "colors": {},
+      "hoist": false,
+      "mentionable": false
+    },
+    {
+      "key": "role_admin",
+      "name": "Administrator",
+      "isEveryone": false,
+      "position": 2,
+      "permissions": "8",
+      "color": 15158332,
+      "colors": {},
+      "hoist": true,
+      "mentionable": false
+    },
+    {
+      "key": "role_member",
+      "name": "Member",
+      "isEveryone": false,
+      "position": 1,
+      "permissions": "0",
+      "color": 3447003,
+      "colors": {},
+      "hoist": false,
+      "mentionable": false
+    }
+  ],
+  "channels": [
+    {
+      "key": "category_information",
+      "name": "INFORMATION",
+      "type": 4,
+      "position": 0,
+      "parent": null,
+      "permissionOverwrites": []
+    },
+    {
+      "key": "channel_rules",
+      "name": "rules",
+      "type": 0,
+      "position": 1,
+      "parent": "category_information",
+      "topic": "Read the rules before participating.",
+      "nsfw": false,
+      "rate_limit_per_user": 0,
+      "permissionOverwrites": [
+        {
+          "target": "everyone",
+          "allow": "1024",
+          "deny": "2048"
+        },
+        {
+          "target": "role",
+          "role": "role_admin",
+          "allow": "2048",
+          "deny": "0"
+        }
+      ]
+    }
+  ],
+  "exportNotes": {
+    "unsupportedChannels": [],
+    "managedRolesRecreatedAsOrdinary": 0,
+    "roleIconsNotIncluded": false
+  }
+}
