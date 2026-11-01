@@ -762,12 +762,82 @@ async function copyRoles(
         });
     }
 
+    // Read back role data from Discord. Creation success alone does not prove
+    // that the requested permission bitfield and display settings were retained.
+    let verifiedCount = 0;
+    try {
+        const targetRoles = (await apiGet(`/guilds/${cfg.dst}/roles`, log)) || [];
+        const sourceEveryone = everyone;
+        const targetEveryone = targetRoles.find((role: any) => role.id === cfg.dst);
+
+        if (sourceEveryone && targetEveryone) {
+            const mismatches = getRoleSettingsMismatches(sourceEveryone, targetEveryone);
+            if (mismatches.length === 0) {
+                verifiedCount++;
+            } else {
+                failedCount++;
+                const message = `Права/настройки @everyone не совпали после переноса: ${mismatches.join(", ")}`;
+                log(message, "error");
+                warnings.push(message);
+                manualReviews.push({
+                    type: "role",
+                    name: "@everyone",
+                    reason: `Не пройдена проверка настроек: ${mismatches.join(", ")}`,
+                    actionRequired: "Сверить базовые разрешения @everyone на целевом сервере с исходным"
+                });
+            }
+        }
+
+        for (const sourceRole of others) {
+            const targetId = roleMap.get(sourceRole.id);
+            const targetRole = targetId ? targetRoles.find((role: any) => role.id === targetId) : undefined;
+            const mismatches = getRoleSettingsMismatches(sourceRole, targetRole);
+            if (mismatches.length === 0) {
+                verifiedCount++;
+                continue;
+            }
+
+            failedCount++;
+            const message = `Роль «${sourceRole.name}»: проверка настроек не пройдена (${mismatches.join(", ")})`;
+            log(message, "error");
+            warnings.push(message);
+            manualReviews.push({
+                type: "role",
+                name: sourceRole.name,
+                id: sourceRole.id,
+                details: {
+                    permissionsBitfield: sourceRole.permissions,
+                    permissionsList: getHumanReadablePermissions(sourceRole.permissions),
+                    color: sourceRole.color,
+                    colorHex: sourceRole.color ? `#${sourceRole.color.toString(16).padStart(6, "0")}` : undefined,
+                    hoist: !!sourceRole.hoist,
+                    mentionable: !!sourceRole.mentionable
+                },
+                reason: `Фактические настройки роли отличаются от исходных: ${mismatches.join(", ")}`,
+                actionRequired: "Открыть настройки роли на целевом сервере и вручную исправить отличающиеся параметры"
+            });
+        }
+    } catch (verificationError) {
+        const message = `Не удалось прочитать роли целевого сервера для проверки разрешений: ${errMsg(verificationError)}`;
+        log(message, "error");
+        warnings.push(message);
+        failedCount++;
+        manualReviews.push({
+            type: "role",
+            name: "Проверка ролей",
+            reason: message,
+            actionRequired: "Повторить проверку ролей на целевом сервере вручную"
+        });
+    }
+
+    log(`Проверка ролей: подтверждено ${verifiedCount}/${others.length + (everyone ? 1 : 0)} (несовпадений/ошибок: ${failedCount})`, verifiedCount === others.length + (everyone ? 1 : 0) && failedCount === 0 ? "success" : "warn");
+
     return {
-        expected: others.length,
+        expected: others.length + (everyone ? 1 : 0),
         created: createdCount,
         matchedExisting: matchedCount,
         skipped: skippedBotRoles,
-        verified: createdCount + matchedCount,
+        verified: verifiedCount,
         failed: failedCount,
     };
 }
@@ -999,6 +1069,37 @@ function permissionOverwritesMatch(expected: any[], actual: any[]): boolean {
     const actualKeys = (actual ?? []).map(key).sort();
     return expectedKeys.length === actualKeys.length &&
         expectedKeys.every((value, index) => value === actualKeys[index]);
+}
+
+/** Сравнение фактически сохранённых настроек роли с исходными значениями. */
+export function getRoleSettingsMismatches(source: any, target: any): string[] {
+    if (!source || !target) return ["Роль отсутствует на целевом сервере"];
+
+    const mismatches: string[] = [];
+    if (normalizePermissionBits(source.permissions) !== normalizePermissionBits(target.permissions)) {
+        mismatches.push("permissions");
+    }
+    if (Number(source.color ?? 0) !== Number(target.color ?? 0)) {
+        mismatches.push("color");
+    }
+    if (!!source.hoist !== !!target.hoist) {
+        mismatches.push("hoist");
+    }
+    if (!!source.mentionable !== !!target.mentionable) {
+        mismatches.push("mentionable");
+    }
+
+    const sourceColors = source.colors ?? {};
+    const targetColors = target.colors ?? {};
+    for (const key of ["primary_color", "secondary_color", "tertiary_color"]) {
+        const sourceValue = sourceColors[key] ?? (key === "primary_color" ? source.color ?? 0 : null);
+        const targetValue = targetColors[key] ?? (key === "primary_color" ? target.color ?? 0 : null);
+        if (sourceValue !== targetValue) {
+            mismatches.push(key);
+        }
+    }
+
+    return mismatches;
 }
 
 /**
