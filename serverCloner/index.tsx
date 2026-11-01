@@ -2208,16 +2208,28 @@ function SettingsPanel() {
         setProgressStep("Инициализация защищенного копирования...");
 
         let roleIdsForRun = selectedRoleIds;
-        if (selectedRoleIds !== null && sourceChannels.length > 0) {
+        let rolesForRun = roles;
+        if (channels && sourceChannels.length > 0) {
             const chosenChannels = selectedChannelIds === null ? null : new Set(selectedChannelIds);
             const selectedCategories = new Set(sourceChannels.filter((channel: any) => channel.type === 4 && chosenChannels?.has(channel.id)).map((channel: any) => channel.id));
             const requiredParents = new Set(sourceChannels.filter((channel: any) => chosenChannels?.has(channel.id) && channel.parent_id).map((channel: any) => channel.parent_id));
             const includedChannels = sourceChannels.filter((channel: any) => chosenChannels === null || chosenChannels.has(channel.id) || (channel.parent_id && selectedCategories.has(channel.parent_id)) || (channel.type === 4 && requiredParents.has(channel.id)));
-            const requiredRoleIds = includedChannels.flatMap((channel: any) => (channel.permission_overwrites ?? []).filter((overwrite: any) => overwrite.type === 0 && overwrite.id !== src).map((overwrite: any) => overwrite.id));
-            roleIdsForRun = Array.from(new Set([...selectedRoleIds, ...requiredRoleIds]));
+            const requiredRoleIds = Array.from(new Set(includedChannels.flatMap((channel: any) => (channel.permission_overwrites ?? []).filter((overwrite: any) => overwrite.type === 0 && overwrite.id !== src).map((overwrite: any) => overwrite.id))));
+            if (roles) {
+                if (selectedRoleIds !== null) roleIdsForRun = Array.from(new Set([...selectedRoleIds, ...requiredRoleIds]));
+            } else {
+                roleIdsForRun = requiredRoleIds;
+                rolesForRun = requiredRoleIds.length > 0;
+            }
+            if (requiredRoleIds.length > 0) log(`Для сохранения прав выбранных каналов автоматически добавлено ролей: ${requiredRoleIds.length}`, "info");
+        } else if (channels && !roles) {
+            // If the inventory was not loaded, preserve channel overwrites conservatively.
+            rolesForRun = true;
+            roleIdsForRun = null;
+            log("Список каналов не загружен: для сохранения их прав будут перенесены все пользовательские роли", "warn");
         }
         const baseCfg: CopyCfg = {
-            src, dst, roles, channels, emojis, settings, images, userOW, skipDuplicates,
+            src, dst, roles: rolesForRun, channels, emojis, settings, images, userOW, skipDuplicates,
             watermark, watermarkText, stealthMode, copyHiddenChannels, orphanChannelPolicy,
             selectedRoleIds: roleIdsForRun, selectedChannelIds
         };
