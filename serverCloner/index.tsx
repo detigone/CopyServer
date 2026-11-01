@@ -2424,7 +2424,7 @@ function SettingsPanel() {
             ]);
             const document = createStructureDocument(guildData ?? srcGuild ?? { id: src, name: "Imported server" }, rolesData ?? [], channelsData ?? []);
             const text = serializeStructureDocument(document);
-            const safeName = String(document.guild.name || "server").replace(/[^\p{L}\p{N}_-]+/gu, "_").slice(0, 48) || "server";
+            const safeName = String(document.guild.name || "server").replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 48) || "server";
             const filename = `CopyServer_${safeName}_Structure_v1.txt`;
             setStructureText(text);
             setStructureFileName(filename);
