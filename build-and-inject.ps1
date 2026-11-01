@@ -296,27 +296,59 @@ try {
         throw "pnpm не найден в PATH. Установи зависимости Vencord согласно официальной инструкции."
     }
 
-    $pluginDirectory = Join-Path $VencordSource "src\userplugins\serverCloner"
-    $vencordPlugin = Join-Path $pluginDirectory "index.tsx"
+    $pluginSourceDirectory = Split-Path -Parent $PluginSource
+    $pluginHelperSource = Join-Path $pluginSourceDirectory "structureDocument.mjs"
+    if (-not (Test-Path -LiteralPath $pluginHelperSource -PathType Leaf)) {
+        throw "Не найден обязательный модуль плагина: $pluginHelperSource. Убедись, что скачан полный каталог serverCloner, а не только index.tsx."
+    }
+
+    $userPluginsDirectory = Join-Path $VencordSource "src\userplugins"
+    $pluginDirectory = Join-Path $userPluginsDirectory "serverCloner"
     $buildDirectory = Join-Path $VencordSource "dist"
     $backupStamp = Get-Date -Format "yyyyMMdd-HHmmss-fff"
+    $pluginBackupRoot = Join-Path $VencordSource ".copyserver-backups\serverCloner"
+    $pluginBackupDirectory = Join-Path $pluginBackupRoot "serverCloner-$backupStamp"
+    $pluginStagingDirectory = Join-Path $userPluginsDirectory ".serverCloner-staging-$backupStamp"
+    $hadPreviousPlugin = Test-Path -LiteralPath $pluginDirectory -PathType Container
+    $pluginPrepared = $false
 
     Write-Host "CopyServer Vencord Injector" -ForegroundColor Green
     Write-Host "Исходники: $VencordSource" -ForegroundColor DarkGray
+    Write-Host "Плагин: $pluginSourceDirectory" -ForegroundColor DarkGray
     Write-Host "Установка: $InstallDir" -ForegroundColor DarkGray
     Write-Host "Режим: $(if ($Dev) { 'Development (--dev)' } else { 'Production' })" -ForegroundColor DarkGray
 
-    Write-Step 1 5 "Подготавливаю плагин..."
-    New-Item -ItemType Directory -Force -Path $pluginDirectory | Out-Null
+    Write-Step 1 5 "Подготавливаю полный каталог плагина..."
+    New-Item -ItemType Directory -Force -Path $userPluginsDirectory, $pluginStagingDirectory, $pluginBackupRoot | Out-Null
 
-    if (Test-Path -LiteralPath $vencordPlugin) {
-        $pluginBackupRoot = Join-Path $VencordSource ".copyserver-backups\serverCloner"
-        New-Item -ItemType Directory -Force -Path $pluginBackupRoot | Out-Null
-        Copy-Item -LiteralPath $vencordPlugin -Destination (Join-Path $pluginBackupRoot "index-$backupStamp.tsx") -Force
-        Write-Host "Предыдущий файл плагина сохранён в .copyserver-backups." -ForegroundColor DarkGray
+    try {
+        Get-ChildItem -LiteralPath $pluginSourceDirectory -Force | Copy-Item -Destination $pluginStagingDirectory -Recurse -Force
+
+        $stagedEntry = Join-Path $pluginStagingDirectory "index.tsx"
+        $stagedHelper = Join-Path $pluginStagingDirectory "structureDocument.mjs"
+        if (-not (Test-Path -LiteralPath $stagedEntry -PathType Leaf) -or -not (Test-Path -LiteralPath $stagedHelper -PathType Leaf)) {
+            throw "В подготовленном каталоге отсутствует index.tsx или structureDocument.mjs."
+        }
+
+        if ($hadPreviousPlugin) {
+            Move-Item -LiteralPath $pluginDirectory -Destination $pluginBackupDirectory
+        }
+        Move-Item -LiteralPath $pluginStagingDirectory -Destination $pluginDirectory
+        $pluginPrepared = $true
+
+        if ($hadPreviousPlugin) {
+            Write-Host "Предыдущая версия всего каталога плагина сохранена: $pluginBackupDirectory" -ForegroundColor DarkGray
+        }
+        Write-Host "Скопированы index.tsx и все вспомогательные файлы плагина." -ForegroundColor Green
+    } catch {
+        if ((Test-Path -LiteralPath $pluginBackupDirectory -PathType Container) -and -not (Test-Path -LiteralPath $pluginDirectory)) {
+            Move-Item -LiteralPath $pluginBackupDirectory -Destination $pluginDirectory
+        }
+        if (Test-Path -LiteralPath $pluginStagingDirectory) {
+            Remove-Item -LiteralPath $pluginStagingDirectory -Recurse -Force
+        }
+        throw
     }
-
-    Copy-Item -LiteralPath $PluginSource -Destination $vencordPlugin -Force
 
     Write-Step 2 5 "Собираю Vencord..."
     Push-Location $VencordSource
@@ -414,6 +446,7 @@ try {
     }
 
     Write-Host "Установка проверена. Резервная копия: $backupDirectory" -ForegroundColor Green
+    $pluginPrepared = $false
 
     if (-not $NoLaunch) {
         Write-Step 5 5 "Запускаю Discord..."
@@ -427,6 +460,19 @@ try {
     Write-Host "Настройки: Discord -> Настройки -> Vencord -> Plugins -> ServerCloner." -ForegroundColor DarkGray
     Write-Host "Откат: .\build-and-inject.ps1 -Rollback" -ForegroundColor DarkGray
 } catch {
+    if ($pluginPrepared) {
+        Write-Host "Сборка или установка не завершилась. Восстанавливаю предыдущий каталог плагина..." -ForegroundColor Yellow
+        if (Test-Path -LiteralPath $pluginDirectory) {
+            Remove-Item -LiteralPath $pluginDirectory -Recurse -Force
+        }
+        if ($hadPreviousPlugin -and (Test-Path -LiteralPath $pluginBackupDirectory)) {
+            Move-Item -LiteralPath $pluginBackupDirectory -Destination $pluginDirectory
+            Write-Host "Предыдущая версия плагина восстановлена." -ForegroundColor Green
+        }
+    }
+    if ($pluginStagingDirectory -and (Test-Path -LiteralPath $pluginStagingDirectory)) {
+        Remove-Item -LiteralPath $pluginStagingDirectory -Recurse -Force
+    }
     Write-Host ""
     Write-Host "ОШИБКА: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
