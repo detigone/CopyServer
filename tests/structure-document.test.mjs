@@ -48,10 +48,10 @@ test("TXT JSON round-trip and validation catch duplicate keys and broken referen
 
     const invalid = JSON.parse(JSON.stringify(doc));
     invalid.channels[1].parent = "missing-category";
-    assert.equal(parseStructureDocument(JSON.stringify(invalid)).valid, false);
+    assert.throws(() => parseStructureDocument(JSON.stringify(invalid)), /unknown parent/);
     invalid.channels[1].parent = "category_1";
     invalid.channels[1].key = invalid.channels[0].key;
-    assert.equal(parseStructureDocument(JSON.stringify(invalid)).valid, false);
+    assert.throws(() => parseStructureDocument(JSON.stringify(invalid)), /Duplicate channel key/);
 });
 
 test("import plan remaps role overwrites and preserves member overwrites", () => {
