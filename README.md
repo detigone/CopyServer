@@ -127,6 +127,43 @@ npm run build
 
 ---
 
+
+## 📄 Structure Documents (TXT v1)
+
+CopyServer can export a server's roles, channels, categories and permission overwrites into an editable UTF-8 `.txt` document, then create a new Discord server from that document.
+
+### Workflow
+
+1. Select the source server and click **«Скачать структуру текущего сервера (.txt)»**.
+2. Edit the downloaded document in a text editor. Rename roles/channels, change category assignments, positions, role permissions and channel overwrites.
+3. Load the edited file using **«Загрузить TXT-документ»** and run **«Проверить документ»**.
+4. Click **«Создать сервер по документу»**. CopyServer creates a new guild and then rebuilds roles, categories, channels and permission overwrites in dependency order.
+
+### Document format
+
+The `.txt` file contains UTF-8 JSON. JSON was chosen deliberately: it is readable, editable by hand, has strict syntax, and can be validated before any Discord API request. The extension remains `.txt` for convenient handling as a text document.
+
+Top-level fields:
+- `format`: must be `copyserver-structure`.
+- `version`: document schema version; currently `1`.
+- `guild`: default name and description for the new server.
+- `roles`: role keys, names, positions, decimal permission bitfields, colors, hoist and mentionable flags.
+- `channels`: stable channel keys, type, name, position, category key, channel settings and permission overwrites.
+- `exportNotes`: information about source objects that need attention.
+
+Discord snowflake IDs are not used as role/category references inside the document. Instead, the exporter generates stable local keys such as `role_1`, `category_1` and `channel_1`. This allows the document to be reused on another server. Permission overwrites store `allow` and `deny` as separate decimal bitfield strings. Role overwrites reference local role keys; member overwrites retain the Discord user ID.
+
+### Important behavior and limitations in v1
+
+- Managed/integration roles are recreated as ordinary roles so their channel permission overwrites can still be mapped. They will no longer be linked to their original bot/integration.
+- Role icon images are not embedded in the document.
+- Unsupported Discord channel types (including active threads) are listed in `exportNotes` and omitted.
+- If an overwrite refers to a role that is not represented in the document, import is blocked rather than silently dropping that permission.
+- Member-specific overwrites retain the original user ID. Discord may reject them if that user cannot be referenced on the new server.
+- Announcement, forum, media and stage channel types may be adapted when the destination guild lacks the required Community features.
+- v1 creates a new server from a document. It does not merge a document into an existing populated server and does not copy messages, members, webhooks, integrations, emojis, server images or all guild-level settings.
+- The importer reports partial completion if Discord rejects an object. It does not automatically delete already-created objects, so review the log before retrying.
+
 ## 🧪 Тестирование
 
 Проект содержит unit-тесты, проверяющие:
@@ -140,6 +177,7 @@ npm run build
 - Сохранение прав скрытых каналов (`VIEW_CHANNEL deny`);
 - Выборочный перенос категорий и каналов с сохранением иерархии;
 - Объединение нескольких источников с раздельными картами соответствия ролей;
+- Экспорт, валидацию и импорт Structure Document TXT v1 с проверкой permission overwrite mappings;
 - Адаптацию каналов объявлений в обычные текстовые для серверов без функции Сообщества.
 
 Запуск тестов:
