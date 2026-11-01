@@ -2489,7 +2489,7 @@ function SettingsPanel() {
                     </label>
                     <select
                         value={src}
-                        onChange={e => setSrc(e.target.value)}
+                        onChange={e => { setSrc(e.target.value); setShowSelectionPanel(false); setSourceRoles([]); setSourceChannels([]); setSelectedRoleIds(null); setSelectedChannelIds(null); }}
                         disabled={busy}
                         style={{
                             width: "100%",
@@ -2589,6 +2589,7 @@ function SettingsPanel() {
                 </div>
             </div>
 
+            {operationMode === "single" && <>
             <div style={{ display: "flex", gap: "8px" }}>
                 <button type="button" onClick={loadSelectionInventory} disabled={busy || loadingInventory || !src}
                     style={{ flex: 1, padding: "9px 12px", borderRadius: "7px", border: "1px solid var(--brand-experiment, #5865f2)", background: "rgba(88,101,242,0.12)", color: "var(--brand-experiment, #8ea1ff)", fontWeight: 600, cursor: busy || loadingInventory || !src ? "not-allowed" : "pointer" }}>
@@ -2635,6 +2636,8 @@ function SettingsPanel() {
                     </div>
                 </div>
             )}
+
+            </>}
 
             {/* Special Section: Водяной знак, Stealth Mode и Скрытые каналы */}
             <div style={{
