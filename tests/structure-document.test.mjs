@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import {
     createStructureDocument,
     serializeStructureDocument,
@@ -85,4 +86,13 @@ test("unresolved role overwrite blocks import instead of dropping permissions", 
     );
     const plan = buildStructureImportPlan(doc, "target");
     assert.throws(() => plan.mapOverwrites(doc.channels[0].permissionOverwrites), /cannot be mapped safely/);
+});
+
+
+test("checked-in Structure Document example is valid", async () => {
+    const sample = await readFile(new URL("../examples/CopyServer_Structure_v1.example.txt", import.meta.url), "utf8");
+    const parsed = parseStructureDocument(sample);
+    assert.equal(parsed.valid, true);
+    assert.equal(parsed.document.roles.length, 3);
+    assert.equal(parsed.document.channels.length, 2);
 });
