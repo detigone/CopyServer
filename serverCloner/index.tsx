@@ -998,17 +998,35 @@ function channelBody(
     // Точный перенос всех Permission Overwrites (ролевые и пользовательские)
     if (ch.permission_overwrites?.length) {
         const ows: any[] = [];
+        const droppedRoleOverwrites: string[] = [];
         for (const ow of ch.permission_overwrites) {
             if (ow.type === 0) {
                 if (ow.id === cfg.src) {
                     ows.push({ id: cfg.dst, type: 0, allow: ow.allow, deny: ow.deny });
                 } else if (roleMap.has(ow.id)) {
                     ows.push({ id: roleMap.get(ow.id), type: 0, allow: ow.allow, deny: ow.deny });
+                } else {
+                    droppedRoleOverwrites.push(String(ow.id));
                 }
             } else if (cfg.userOW) {
                 ows.push({ id: ow.id, type: 1, allow: ow.allow, deny: ow.deny });
             }
         }
+
+        if (droppedRoleOverwrites.length > 0) {
+            const message = `Канал «${ch.name}»: ${droppedRoleOverwrites.length} ролевых permission overwrite не перенесено — соответствующие роли отсутствуют или не были сопоставлены.`;
+            log(message, "warn");
+            warnings.push(message);
+            manualReviews.push({
+                type: ch.type === 4 ? "category" : "channel",
+                name: ch.name,
+                id: ch.id,
+                details: { overwritesCount: ch.permission_overwrites.length },
+                reason: `Не удалось сопоставить роли для overwrite: ${droppedRoleOverwrites.join(", ")}`,
+                actionRequired: "Создать или сопоставить недостающие роли, затем восстановить права канала вручную"
+            });
+        }
+
         if (ows.length) body.permission_overwrites = ows;
     }
     return body;
