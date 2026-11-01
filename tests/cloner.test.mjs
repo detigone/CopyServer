@@ -1168,3 +1168,49 @@ test('Requirement Manual Control: prepareForceAddPayload generates private hidde
     assert.equal(payload.body.permission_overwrites.length, 1);
     assert.equal(payload.body.permission_overwrites[0].deny, '1024');
 });
+
+// Selective transfer planner: category selection includes its children, while
+// selecting one child includes only that child and its parent category.
+export function expandSelectedChannels(channels, selectedIds) {
+    const usable = channels.filter(channel => !UNSUPPORTED_TYPES.includes(channel.type));
+    if (selectedIds == null) return usable;
+    const selected = new Set(selectedIds);
+    const selectedCategories = new Set();
+    const requiredParentCategories = new Set();
+    for (const channel of usable) {
+        if (selected.has(channel.id) && channel.type === 4) selectedCategories.add(channel.id);
+        if (selected.has(channel.id) && channel.parent_id) requiredParentCategories.add(channel.parent_id);
+    }
+    return usable.filter(channel => selected.has(channel.id) ||
+        (channel.parent_id && selectedCategories.has(channel.parent_id)) ||
+        (channel.type === 4 && requiredParentCategories.has(channel.id)));
+}
+
+test('Selective transfer: selecting a category includes all children', () => {
+    const channels = [
+        { id: 'cat-a', type: 4, name: 'A' },
+        { id: 'a-1', type: 0, parent_id: 'cat-a' },
+        { id: 'a-2', type: 2, parent_id: 'cat-a' },
+        { id: 'cat-b', type: 4, name: 'B' },
+        { id: 'b-1', type: 0, parent_id: 'cat-b' }
+    ];
+    assert.deepEqual(expandSelectedChannels(channels, ['cat-a']).map(channel => channel.id), ['cat-a', 'a-1', 'a-2']);
+});
+
+test('Selective transfer: selecting one channel includes its parent but not sibling channels', () => {
+    const channels = [
+        { id: 'cat-a', type: 4, name: 'A' },
+        { id: 'a-1', type: 0, parent_id: 'cat-a' },
+        { id: 'a-2', type: 2, parent_id: 'cat-a' },
+        { id: 'cat-b', type: 4, name: 'B' },
+        { id: 'b-1', type: 0, parent_id: 'cat-b' },
+        { id: 'thread', type: 11, parent_id: 'cat-a' }
+    ];
+    assert.deepEqual(expandSelectedChannels(channels, ['a-1']).map(channel => channel.id), ['cat-a', 'a-1']);
+});
+
+test('Selective transfer: empty selection copies nothing and null means all supported objects', () => {
+    const channels = [{ id: 'cat', type: 4 }, { id: 'ch', type: 0, parent_id: 'cat' }, { id: 'thread', type: 11 }];
+    assert.deepEqual(expandSelectedChannels(channels, []).map(channel => channel.id), []);
+    assert.deepEqual(expandSelectedChannels(channels, null).map(channel => channel.id), ['cat', 'ch']);
+});
