@@ -2258,7 +2258,7 @@ function SettingsPanel() {
 
     const handleOpenPurge = () => {
         if (!dst) return showToast("Выбери целевой сервер для очистки!", "failure");
-        if (dst === src) return showToast("Запрещено: нельзя очищать исходный сервер-донор!", "failure");
+        if (dst === src || (operationMode === "merge" && mergeSourceIds.includes(dst))) return showToast("Запрещено: нельзя очищать сервер-источник объединения!", "failure");
         setPurgeStep(1);
         setShowPurgeModal(true);
     };
@@ -2817,7 +2817,7 @@ function SettingsPanel() {
                     <DiscordSwitch
                         checked={settings}
                         onChange={setSettings}
-                        disabled={busy}
+                        disabled={busy || operationMode === "merge"}
                         title="Основные настройки сервера"
                         subtitle="Название, верификация, AFK, системные каналы и оповещения"
                         icon={<span>⚙️</span>}
@@ -2826,7 +2826,7 @@ function SettingsPanel() {
                     <DiscordSwitch
                         checked={images}
                         onChange={setImages}
-                        disabled={busy}
+                        disabled={busy || operationMode === "merge"}
                         title="Иконка и баннер Ultra-HD"
                         subtitle="Автоскачивание и загрузка графики сервера до 4096px"
                         icon={<span>🎨</span>}
@@ -2875,7 +2875,7 @@ function SettingsPanel() {
                         ) : (
                             <>
                                 <span>🚀</span>
-                                <span>Запустить безопасное клонирование</span>
+                                <span>{operationMode === "merge" ? "Запустить объединение серверов" : "Запустить безопасное клонирование"}</span>
                             </>
                         )}
                     </button>
@@ -3228,15 +3228,21 @@ function SettingsPanel() {
                     }}>
                         <div style={{ padding: "18px 22px", borderBottom: "1px solid var(--background-modifier-accent, #3f4147)" }}>
                             <div style={{ fontSize: "17px", fontWeight: 700, color: "var(--header-primary, #ffffff)" }}>
-                                Запустить безопасное клонирование?
+                                {operationMode === "merge" ? "Запустить объединение серверов?" : "Запустить безопасное клонирование?"}
                             </div>
                         </div>
                         <div style={{ padding: "18px 22px", display: "flex", flexDirection: "column", gap: "12px", fontSize: "13px", color: "var(--text-normal, #dbdee1)" }}>
-                            <p>Вы собираетесь перенести конфигурацию сервера:</p>
+                            <p>{operationMode === "merge" ? "Вы собираетесь объединить выбранные серверы в один целевой сервер:" : "Вы собираетесь перенести конфигурацию сервера:"}</p>
                             <div style={{ background: "var(--background-secondary, #2b2d31)", padding: "12px", borderRadius: "8px", fontSize: "13px", display: "flex", flexDirection: "column", gap: "6px" }}>
-                                <div><strong>Исходный:</strong> {srcGuild?.name || src}</div>
+                                {operationMode === "merge" ? (
+                                    <>
+                                        <div><strong>Источники:</strong></div>
+                                        {mergeSourceIds.map(id => <div key={id}>• {allGuilds.find((guild: any) => guild.id === id)?.name || id}</div>)}
+                                    </>
+                                ) : <div><strong>Исходный:</strong> {srcGuild?.name || src}</div>}
                                 <div><strong>Целевой:</strong> {dstGuild?.name || dst}</div>
                             </div>
+                            {operationMode === "merge" && <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>Серверные настройки не смешиваются. @everyone берётся из первого источника. Одноимённые роли сохраняются отдельно.</div>}
                             <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                                 <div>• <strong>Каналы:</strong> {channels ? (copyHiddenChannels ? "Все поддерживаемые каналы (включая скрытые с правами, ветки исключены)" : "Только публичные (скрытые исключены)") : "Отключено в пресете"}</div>
                                 <div>• <strong>Orphan Policy:</strong> {orphanChannelPolicy === "root" ? "Переносить каналы без категории в корень" : "Исключать дочерние каналы вместе с категорией"}</div>
