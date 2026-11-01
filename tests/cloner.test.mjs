@@ -6,6 +6,78 @@ const MAX_TOPIC_LENGTH = 1024;
 const UNSUPPORTED_TYPES = [6, 10, 11, 12];
 const SUPPORTED_TYPES = [0, 2, 4, 5, 13, 15, 16];
 
+function normalizePermissionBits(value) {
+    try {
+        return BigInt(value ?? "0").toString();
+    } catch {
+        return String(value ?? "0");
+    }
+}
+
+export function getRoleSettingsMismatches(source, target) {
+    if (!source || !target) return ["Роль отсутствует на целевом сервере"];
+
+    const mismatches = [];
+    if (normalizePermissionBits(source.permissions) !== normalizePermissionBits(target.permissions)) mismatches.push("permissions");
+    if (Number(source.color ?? 0) !== Number(target.color ?? 0)) mismatches.push("color");
+    if (!!source.hoist !== !!target.hoist) mismatches.push("hoist");
+    if (!!source.mentionable !== !!target.mentionable) mismatches.push("mentionable");
+
+    const sourceColors = source.colors ?? {};
+    const targetColors = target.colors ?? {};
+    for (const key of ["primary_color", "secondary_color", "tertiary_color"]) {
+        const sourceValue = sourceColors[key] ?? (key === "primary_color" ? source.color ?? 0 : null);
+        const targetValue = targetColors[key] ?? (key === "primary_color" ? target.color ?? 0 : null);
+        if (sourceValue !== targetValue) mismatches.push(key);
+    }
+    return mismatches;
+}
+
+test("Role verification accepts exact permission bitfields, including values beyond 32 bits", () => {
+    const source = {
+        permissions: "1099511629824",
+        color: 0x123456,
+        hoist: true,
+        mentionable: false,
+        colors: { primary_color: 0x123456 }
+    };
+    const target = {
+        permissions: "1099511629824",
+        color: 0x123456,
+        hoist: true,
+        mentionable: false,
+        colors: { primary_color: 0x123456 }
+    };
+    assert.deepEqual(getRoleSettingsMismatches(source, target), []);
+});
+
+test("Role verification detects stripped permissions and changed display settings", () => {
+    const source = {
+        permissions: "1099511629824",
+        color: 0x123456,
+        hoist: true,
+        mentionable: true,
+        colors: { primary_color: 0x123456, secondary_color: 0x654321 }
+    };
+    const target = {
+        permissions: "2048",
+        color: 0,
+        hoist: false,
+        mentionable: false,
+        colors: { primary_color: 0 }
+    };
+    assert.deepEqual(getRoleSettingsMismatches(source, target), [
+        "permissions", "color", "hoist", "mentionable", "primary_color", "secondary_color"
+    ]);
+});
+
+test("Role verification reports a missing mapped target role", () => {
+    assert.deepEqual(
+        getRoleSettingsMismatches({ permissions: "0" }, undefined),
+        ["Роль отсутствует на целевом сервере"]
+    );
+});
+
 // Helper: Token masking
 export function sanitizeToken(text) {
     if (!text) return "";
