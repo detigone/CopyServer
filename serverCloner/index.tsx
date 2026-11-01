@@ -1113,7 +1113,7 @@ async function copyChannelsWithVerification(
             Math.round(52 + (idx / orderedList.length) * 32)
         );
 
-        const isHidden = isChannelHidden(ch, cfg.src);
+        const isHidden = isChannelHidden(ch, cfg.src, categoryMap);
         const full = channelBody(ch, idMap, roleMap, emojiMap, cfg, log, warnings, manualReviews);
         expectedOverwritesBySourceId.set(ch.id, full.permission_overwrites ?? []);
         full.position = position++;
