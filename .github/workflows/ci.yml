@@ -19,6 +19,8 @@ jobs:
           node-version: 20
       - name: Install dependencies
         run: npm install
+      - name: Parse Vencord plugin TSX source
+        run: npx esbuild serverCloner/index.tsx --loader:.tsx=tsx --outfile=/tmp/CopyServer-plugin-check.js
       - name: Run unit tests
         run: npm test
       - name: Type-check simulator
