@@ -443,6 +443,10 @@ async function copyRoles(
 ): Promise<ObjectMetrics> {
     onProgress?.("Получение списка ролей исходного сервера...", 10);
     const roles = await apiGet(`/guilds/${cfg.src}/roles`, log);
+    const targetGuildForRoles = await apiGet(`/guilds/${cfg.dst}`, log);
+    const targetFeatures = new Set<string>(targetGuildForRoles?.features ?? []);
+    const supportsRoleIcons = targetFeatures.has("ROLE_ICONS");
+    const supportsEnhancedRoleColors = targetFeatures.has("ENHANCED_ROLE_COLORS");
     const everyone = roles.find((r: any) => r.id === cfg.src);
 
     const rawOthers = roles.filter((r: any) => r.id !== cfg.src);
@@ -516,17 +520,63 @@ async function copyRoles(
             permissions: r.permissions,
             hoist: !!r.hoist,
             mentionable: !!r.mentionable,
+            color: r.color ?? 0
         };
-        if (r.color) body.color = r.color;
-        if (r.unicode_emoji) body.unicode_emoji = r.unicode_emoji;
 
-        // Перенос расширенной цветовой палитры (градиентные / голографические роли)
+        // Значки ролей доступны только серверам с ROLE_ICONS (в частности, при нужном уровне бустов).
+        // Не отправляем icon/unicode_emoji на сервер без этой функции: Discord иначе отклоняет создание роли.
+        if (supportsRoleIcons) {
+            if (r.unicode_emoji) body.unicode_emoji = r.unicode_emoji;
+            if (r.icon) {
+                try {
+                    body.icon = await cdnDataUrl(`https://cdn.discordapp.com/role-icons/${r.id}/${r.icon}.png`);
+                } catch (iconError) {
+                    const warning = `Роль «${r.name}»: не удалось загрузить значок; роль будет создана без него (${errMsg(iconError)})`;
+                    log(warning, "warn");
+                    warnings.push(warning);
+                    manualReviews.push({
+                        type: "role",
+                        name: r.name,
+                        id: r.id,
+                        reason: "Не удалось получить исходное изображение значка роли",
+                        actionRequired: "При необходимости установить значок роли вручную"
+                    });
+                }
+            }
+        } else if (r.icon || r.unicode_emoji) {
+            const warning = `Роль «${r.name}»: значок пропущен — целевой сервер не имеет функции ROLE_ICONS`;
+            log(warning, "warn");
+            warnings.push(warning);
+            manualReviews.push({
+                type: "role",
+                name: r.name,
+                id: r.id,
+                reason: "Целевой сервер не поддерживает значки ролей (ROLE_ICONS)",
+                actionRequired: "Значок можно перенести только на сервере с включенной функцией ROLE_ICONS; сама роль будет создана без значка"
+            });
+        }
+
+        // Градиенты и голографические цвета требуют отдельной функции сервера.
         if (r.colors && typeof r.colors === "object") {
-            body.colors = {
-                primary_color: r.colors.primary_color ?? r.color ?? 0,
-                ...(r.colors.secondary_color !== undefined ? { secondary_color: r.colors.secondary_color } : {}),
-                ...(r.colors.tertiary_color !== undefined ? { tertiary_color: r.colors.tertiary_color } : {})
-            };
+            const primaryColor = r.colors.primary_color ?? r.color ?? 0;
+            if (supportsEnhancedRoleColors) {
+                body.colors = {
+                    primary_color: primaryColor,
+                    ...(r.colors.secondary_color !== undefined ? { secondary_color: r.colors.secondary_color } : {}),
+                    ...(r.colors.tertiary_color !== undefined ? { tertiary_color: r.colors.tertiary_color } : {})
+                };
+            } else if (r.colors.secondary_color != null || r.colors.tertiary_color != null) {
+                const warning = `Роль «${r.name}»: градиент/голографический стиль пропущен — целевой сервер не имеет ENHANCED_ROLE_COLORS`;
+                log(warning, "warn");
+                warnings.push(warning);
+                manualReviews.push({
+                    type: "role",
+                    name: r.name,
+                    id: r.id,
+                    reason: "Целевой сервер не поддерживает расширенные цвета ролей",
+                    actionRequired: "Роль сохранена с основным цветом; градиентный или голографический стиль недоступен на целевом сервере"
+                });
+            }
         }
 
         let created: any = null;
@@ -615,6 +665,8 @@ async function copyRoles(
                     const alt: any = {
                         name: r.name.slice(0, 100),
                         color: r.color ?? 0,
+                        hoist: !!r.hoist,
+                        mentionable: !!r.mentionable,
                         permissions: "0"
                     };
                     created = await apiPost(`/guilds/${cfg.dst}/roles`, alt, log, true);
