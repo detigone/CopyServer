@@ -587,8 +587,8 @@ async function copyRoles(
             roleMap.set(r.id, created.id);
 
             // Проверка фактического сохранения градиента/голографического стиля
-            if (r.colors && (r.colors.secondary_color || r.colors.tertiary_color)) {
-                if (!created.colors || !created.colors.secondary_color) {
+            if (supportsEnhancedRoleColors && r.colors && (r.colors.secondary_color != null || r.colors.tertiary_color != null)) {
+                if (!created.colors || (created.colors.secondary_color == null && created.colors.tertiary_color == null)) {
                     const warnGradient = `Роль «${r.name}»: градиентный/голографический стиль не поддерживается целевым сервером (сохранен базовый цвет)`;
                     log(`[Стили ролей] ${warnGradient}`, "warn");
                     warnings.push(warnGradient);
