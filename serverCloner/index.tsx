@@ -443,6 +443,10 @@ async function copyRoles(
 ): Promise<ObjectMetrics> {
     onProgress?.("Получение списка ролей исходного сервера...", 10);
     const roles = await apiGet(`/guilds/${cfg.src}/roles`, log);
+    const targetGuildForRoles = await apiGet(`/guilds/${cfg.dst}`, log);
+    const targetFeatures = new Set<string>(targetGuildForRoles?.features ?? []);
+    const supportsRoleIcons = targetFeatures.has("ROLE_ICONS");
+    const supportsEnhancedRoleColors = targetFeatures.has("ENHANCED_ROLE_COLORS");
     const everyone = roles.find((r: any) => r.id === cfg.src);
 
     const rawOthers = roles.filter((r: any) => r.id !== cfg.src);
@@ -502,12 +506,28 @@ async function copyRoles(
         onProgress?.(`Создание ролей (${idx}/${others.length}): ${r.name}`, Math.round(10 + (idx / others.length) * 20));
 
         if (cfg.skipDuplicates) {
-            const found = existingTargetRoles.find((er: any) => er.name.toLowerCase() === r.name.toLowerCase());
-            if (found) {
+            // Do not accidentally map a source role to a managed integration role.
+            const candidates = existingTargetRoles.filter((er: any) =>
+                !er.managed && er.id !== cfg.dst && er.name.toLowerCase() === r.name.toLowerCase()
+            );
+            if (candidates.length === 1) {
+                const found = candidates[0];
                 roleMap.set(r.id, found.id);
                 matchedCount++;
-                log(`Роль «${r.name}» уже существует на целевом сервере (сопоставлена)`, "info");
+                log(`Роль «${r.name}» уже существует на целевом сервере (сопоставлена; настройки будут проверены)`, "info");
                 continue;
+            }
+            if (candidates.length > 1) {
+                const message = `Роль «${r.name}»: на целевом сервере найдено несколько одноимённых ролей; автоматическое сопоставление пропущено во избежание переноса прав не на ту роль.`;
+                log(message, "warn");
+                warnings.push(message);
+                manualReviews.push({
+                    type: "role",
+                    name: r.name,
+                    id: r.id,
+                    reason: "Найдено несколько одноимённых ролей на целевом сервере",
+                    actionRequired: "Переименовать лишние роли или сопоставить нужную роль вручную; CopyServer создаст отдельную роль-копию"
+                });
             }
         }
 
@@ -516,17 +536,63 @@ async function copyRoles(
             permissions: r.permissions,
             hoist: !!r.hoist,
             mentionable: !!r.mentionable,
+            color: r.color ?? 0
         };
-        if (r.color) body.color = r.color;
-        if (r.unicode_emoji) body.unicode_emoji = r.unicode_emoji;
 
-        // Перенос расширенной цветовой палитры (градиентные / голографические роли)
+        // Значки ролей доступны только серверам с ROLE_ICONS (в частности, при нужном уровне бустов).
+        // Не отправляем icon/unicode_emoji на сервер без этой функции: Discord иначе отклоняет создание роли.
+        if (supportsRoleIcons) {
+            if (r.unicode_emoji) body.unicode_emoji = r.unicode_emoji;
+            if (r.icon) {
+                try {
+                    body.icon = await cdnDataUrl(`https://cdn.discordapp.com/role-icons/${r.id}/${r.icon}.png`);
+                } catch (iconError) {
+                    const warning = `Роль «${r.name}»: не удалось загрузить значок; роль будет создана без него (${errMsg(iconError)})`;
+                    log(warning, "warn");
+                    warnings.push(warning);
+                    manualReviews.push({
+                        type: "role",
+                        name: r.name,
+                        id: r.id,
+                        reason: "Не удалось получить исходное изображение значка роли",
+                        actionRequired: "При необходимости установить значок роли вручную"
+                    });
+                }
+            }
+        } else if (r.icon || r.unicode_emoji) {
+            const warning = `Роль «${r.name}»: значок пропущен — целевой сервер не имеет функции ROLE_ICONS`;
+            log(warning, "warn");
+            warnings.push(warning);
+            manualReviews.push({
+                type: "role",
+                name: r.name,
+                id: r.id,
+                reason: "Целевой сервер не поддерживает значки ролей (ROLE_ICONS)",
+                actionRequired: "Значок можно перенести только на сервере с включенной функцией ROLE_ICONS; сама роль будет создана без значка"
+            });
+        }
+
+        // Градиенты и голографические цвета требуют отдельной функции сервера.
         if (r.colors && typeof r.colors === "object") {
-            body.colors = {
-                primary_color: r.colors.primary_color ?? r.color ?? 0,
-                ...(r.colors.secondary_color !== undefined ? { secondary_color: r.colors.secondary_color } : {}),
-                ...(r.colors.tertiary_color !== undefined ? { tertiary_color: r.colors.tertiary_color } : {})
-            };
+            const primaryColor = r.colors.primary_color ?? r.color ?? 0;
+            if (supportsEnhancedRoleColors) {
+                body.colors = {
+                    primary_color: primaryColor,
+                    ...(r.colors.secondary_color !== undefined ? { secondary_color: r.colors.secondary_color } : {}),
+                    ...(r.colors.tertiary_color !== undefined ? { tertiary_color: r.colors.tertiary_color } : {})
+                };
+            } else if (r.colors.secondary_color != null || r.colors.tertiary_color != null) {
+                const warning = `Роль «${r.name}»: градиент/голографический стиль пропущен — целевой сервер не имеет ENHANCED_ROLE_COLORS`;
+                log(warning, "warn");
+                warnings.push(warning);
+                manualReviews.push({
+                    type: "role",
+                    name: r.name,
+                    id: r.id,
+                    reason: "Целевой сервер не поддерживает расширенные цвета ролей",
+                    actionRequired: "Роль сохранена с основным цветом; градиентный или голографический стиль недоступен на целевом сервере"
+                });
+            }
         }
 
         let created: any = null;
@@ -537,8 +603,8 @@ async function copyRoles(
             roleMap.set(r.id, created.id);
 
             // Проверка фактического сохранения градиента/голографического стиля
-            if (r.colors && (r.colors.secondary_color || r.colors.tertiary_color)) {
-                if (!created.colors || !created.colors.secondary_color) {
+            if (supportsEnhancedRoleColors && r.colors && (r.colors.secondary_color != null || r.colors.tertiary_color != null)) {
+                if (!created.colors || (created.colors.secondary_color == null && created.colors.tertiary_color == null)) {
                     const warnGradient = `Роль «${r.name}»: градиентный/голографический стиль не поддерживается целевым сервером (сохранен базовый цвет)`;
                     log(`[Стили ролей] ${warnGradient}`, "warn");
                     warnings.push(warnGradient);
@@ -615,6 +681,8 @@ async function copyRoles(
                     const alt: any = {
                         name: r.name.slice(0, 100),
                         color: r.color ?? 0,
+                        hoist: !!r.hoist,
+                        mentionable: !!r.mentionable,
                         permissions: "0"
                     };
                     created = await apiPost(`/guilds/${cfg.dst}/roles`, alt, log, true);
@@ -710,12 +778,82 @@ async function copyRoles(
         });
     }
 
+    // Read back role data from Discord. Creation success alone does not prove
+    // that the requested permission bitfield and display settings were retained.
+    let verifiedCount = 0;
+    try {
+        const targetRoles = (await apiGet(`/guilds/${cfg.dst}/roles`, log)) || [];
+        const sourceEveryone = everyone;
+        const targetEveryone = targetRoles.find((role: any) => role.id === cfg.dst);
+
+        if (sourceEveryone && targetEveryone) {
+            const mismatches = getRoleSettingsMismatches(sourceEveryone, targetEveryone);
+            if (mismatches.length === 0) {
+                verifiedCount++;
+            } else {
+                failedCount++;
+                const message = `Права/настройки @everyone не совпали после переноса: ${mismatches.join(", ")}`;
+                log(message, "error");
+                warnings.push(message);
+                manualReviews.push({
+                    type: "role",
+                    name: "@everyone",
+                    reason: `Не пройдена проверка настроек: ${mismatches.join(", ")}`,
+                    actionRequired: "Сверить базовые разрешения @everyone на целевом сервере с исходным"
+                });
+            }
+        }
+
+        for (const sourceRole of others) {
+            const targetId = roleMap.get(sourceRole.id);
+            const targetRole = targetId ? targetRoles.find((role: any) => role.id === targetId) : undefined;
+            const mismatches = getRoleSettingsMismatches(sourceRole, targetRole);
+            if (mismatches.length === 0) {
+                verifiedCount++;
+                continue;
+            }
+
+            failedCount++;
+            const message = `Роль «${sourceRole.name}»: проверка настроек не пройдена (${mismatches.join(", ")})`;
+            log(message, "error");
+            warnings.push(message);
+            manualReviews.push({
+                type: "role",
+                name: sourceRole.name,
+                id: sourceRole.id,
+                details: {
+                    permissionsBitfield: sourceRole.permissions,
+                    permissionsList: getHumanReadablePermissions(sourceRole.permissions),
+                    color: sourceRole.color,
+                    colorHex: sourceRole.color ? `#${sourceRole.color.toString(16).padStart(6, "0")}` : undefined,
+                    hoist: !!sourceRole.hoist,
+                    mentionable: !!sourceRole.mentionable
+                },
+                reason: `Фактические настройки роли отличаются от исходных: ${mismatches.join(", ")}`,
+                actionRequired: "Открыть настройки роли на целевом сервере и вручную исправить отличающиеся параметры"
+            });
+        }
+    } catch (verificationError) {
+        const message = `Не удалось прочитать роли целевого сервера для проверки разрешений: ${errMsg(verificationError)}`;
+        log(message, "error");
+        warnings.push(message);
+        failedCount++;
+        manualReviews.push({
+            type: "role",
+            name: "Проверка ролей",
+            reason: message,
+            actionRequired: "Повторить проверку ролей на целевом сервере вручную"
+        });
+    }
+
+    log(`Проверка ролей: подтверждено ${verifiedCount}/${others.length + (everyone ? 1 : 0)} (несовпадений/ошибок: ${failedCount})`, verifiedCount === others.length + (everyone ? 1 : 0) && failedCount === 0 ? "success" : "warn");
+
     return {
-        expected: others.length,
+        expected: others.length + (everyone ? 1 : 0),
         created: createdCount,
         matchedExisting: matchedCount,
         skipped: skippedBotRoles,
-        verified: createdCount + matchedCount,
+        verified: verifiedCount,
         failed: failedCount,
     };
 }
@@ -876,35 +1014,154 @@ function channelBody(
     // Точный перенос всех Permission Overwrites (ролевые и пользовательские)
     if (ch.permission_overwrites?.length) {
         const ows: any[] = [];
+        const droppedRoleOverwrites: string[] = [];
         for (const ow of ch.permission_overwrites) {
             if (ow.type === 0) {
                 if (ow.id === cfg.src) {
                     ows.push({ id: cfg.dst, type: 0, allow: ow.allow, deny: ow.deny });
                 } else if (roleMap.has(ow.id)) {
                     ows.push({ id: roleMap.get(ow.id), type: 0, allow: ow.allow, deny: ow.deny });
+                } else {
+                    droppedRoleOverwrites.push(String(ow.id));
                 }
             } else if (cfg.userOW) {
                 ows.push({ id: ow.id, type: 1, allow: ow.allow, deny: ow.deny });
             }
         }
+
+        if (droppedRoleOverwrites.length > 0) {
+            const message = `Канал «${ch.name}»: ${droppedRoleOverwrites.length} ролевых permission overwrite не перенесено — соответствующие роли отсутствуют или не были сопоставлены.`;
+            log(message, "warn");
+            warnings.push(message);
+            manualReviews.push({
+                type: ch.type === 4 ? "category" : "channel",
+                name: ch.name,
+                id: ch.id,
+                details: { overwritesCount: ch.permission_overwrites.length },
+                reason: `Не удалось сопоставить роли для overwrite: ${droppedRoleOverwrites.join(", ")}`,
+                actionRequired: "Создать или сопоставить недостающие роли, затем восстановить права канала вручную"
+            });
+        }
+
         if (ows.length) body.permission_overwrites = ows;
     }
     return body;
 }
 
 /**
+ * Повторное применение permission overwrites после резервного создания канала.
+ * Сначала применяется @everyone, чтобы приватный канал не оставался открытым
+ * во время последующей настройки ролевых разрешений.
+ */
+async function restorePermissionOverwrites(
+    channelId: string,
+    overwrites: any[],
+    guildId: string,
+    log: LogFn,
+    warnings: string[],
+    channelName: string
+): Promise<number> {
+    if (!Array.isArray(overwrites) || overwrites.length === 0) return 0;
+
+    const ordered = [...overwrites].sort((a, b) => {
+        if (a.id === guildId) return -1;
+        if (b.id === guildId) return 1;
+        return 0;
+    });
+    let failed = 0;
+
+    for (const overwrite of ordered) {
+        try {
+            await apiPut(`/channels/${channelId}/permissions/${overwrite.id}`, {
+                type: overwrite.type,
+                allow: String(overwrite.allow ?? "0"),
+                deny: String(overwrite.deny ?? "0")
+            }, log, true);
+        } catch (error: any) {
+            failed++;
+            const message = `Не удалось восстановить права «${channelName}» для overwrite ${overwrite.id}: ${errMsg(error)}`;
+            log(message, "warn");
+            warnings.push(message);
+        }
+    }
+
+    return failed;
+}
+
+function normalizePermissionBits(value: any): string {
+    try {
+        return BigInt(value ?? "0").toString();
+    } catch {
+        return String(value ?? "0");
+    }
+}
+
+function permissionOverwritesMatch(expected: any[], actual: any[]): boolean {
+    const key = (overwrite: any) =>
+        `${overwrite.type}:${overwrite.id}:${normalizePermissionBits(overwrite.allow)}:${normalizePermissionBits(overwrite.deny)}`;
+    const expectedKeys = (expected ?? []).map(key).sort();
+    const actualKeys = (actual ?? []).map(key).sort();
+    return expectedKeys.length === actualKeys.length &&
+        expectedKeys.every((value, index) => value === actualKeys[index]);
+}
+
+/** Сравнение фактически сохранённых настроек роли с исходными значениями. */
+export function getRoleSettingsMismatches(source: any, target: any): string[] {
+    if (!source || !target) return ["Роль отсутствует на целевом сервере"];
+
+    const mismatches: string[] = [];
+    if (normalizePermissionBits(source.permissions) !== normalizePermissionBits(target.permissions)) {
+        mismatches.push("permissions");
+    }
+    if (Number(source.color ?? 0) !== Number(target.color ?? 0)) {
+        mismatches.push("color");
+    }
+    if (!!source.hoist !== !!target.hoist) {
+        mismatches.push("hoist");
+    }
+    if (!!source.mentionable !== !!target.mentionable) {
+        mismatches.push("mentionable");
+    }
+
+    const sourceColors = source.colors ?? {};
+    const targetColors = target.colors ?? {};
+    for (const key of ["primary_color", "secondary_color", "tertiary_color"]) {
+        const sourceValue = sourceColors[key] ?? (key === "primary_color" ? source.color ?? 0 : null);
+        const targetValue = targetColors[key] ?? (key === "primary_color" ? target.color ?? 0 : null);
+        if (sourceValue !== targetValue) {
+            mismatches.push(key);
+        }
+    }
+
+    return mismatches;
+}
+
+/**
  * Проверка является ли канал скрытым/приватным
  */
-function isChannelHidden(ch: any, srcGuildId: string): boolean {
-    if (!ch.permission_overwrites) return false;
-    const everyoneOW = ch.permission_overwrites.find((ow: any) => ow.id === srcGuildId && ow.type === 0);
-    if (!everyoneOW) return false;
-    try {
-        const denyBig = BigInt(everyoneOW.deny || "0");
-        return (denyBig & 1024n) === 1024n;
-    } catch {
-        return false;
+function isChannelHidden(
+    ch: any,
+    srcGuildId: string,
+    categoryMap?: Map<string, any>
+): boolean {
+    const hasEveryoneViewDeny = (overwrites: any[] | undefined): boolean => {
+        const everyoneOW = overwrites?.find((ow: any) => ow.id === srcGuildId && ow.type === 0);
+        if (!everyoneOW) return false;
+        try {
+            return (BigInt(everyoneOW.deny || "0") & 1024n) === 1024n;
+        } catch {
+            return false;
+        }
+    };
+
+    // Explicit channel overwrites take precedence. A channel with no local
+    // overwrites inherits the visibility restriction of its parent category.
+    if (Array.isArray(ch.permission_overwrites) && ch.permission_overwrites.length > 0) {
+        return hasEveryoneViewDeny(ch.permission_overwrites);
     }
+
+    const parentCategory = ch.parent_id ? categoryMap?.get(ch.parent_id) : undefined;
+    return hasEveryoneViewDeny(parentCategory?.permission_overwrites);
 }
 
 /**
@@ -949,7 +1206,7 @@ async function copyChannelsWithVerification(
 
     let hiddenCount = 0;
     usable.forEach((ch: any) => {
-        if (isChannelHidden(ch, cfg.src)) hiddenCount++;
+        if (isChannelHidden(ch, cfg.src, categoryMap)) hiddenCount++;
     });
 
     log(`Обнаружено поддерживаемых каналов: ${usable.length} (из них скрытых/приватных: ${hiddenCount})`, "info");
@@ -959,7 +1216,7 @@ async function copyChannelsWithVerification(
     const activeCategories: any[] = [];
 
     for (const cat of categories) {
-        const isHidden = isChannelHidden(cat, cfg.src);
+        const isHidden = isChannelHidden(cat, cfg.src, categoryMap);
         if (cfg.copyHiddenChannels === false && isHidden) {
             excludedCategoryIds.add(cat.id);
             log(`[Дерево категорий] Скрытая категория «${cat.name}» исключена пользователем`, "warn");
@@ -974,7 +1231,7 @@ async function copyChannelsWithVerification(
     let skippedByFilterCount = 0;
 
     for (const ch of nonCats) {
-        const isHidden = isChannelHidden(ch, cfg.src);
+        const isHidden = isChannelHidden(ch, cfg.src, categoryMap);
         if (cfg.copyHiddenChannels === false && isHidden) {
             skippedByFilterCount++;
             continue;
@@ -1030,6 +1287,7 @@ async function copyChannelsWithVerification(
     let createdCount = 0;
     let failedCount = 0;
     const failedChannels: any[] = [];
+    const expectedOverwritesBySourceId = new Map<string, any[]>();
 
     for (const ch of orderedList) {
         if (isAborted?.()) {
@@ -1042,8 +1300,9 @@ async function copyChannelsWithVerification(
             Math.round(52 + (idx / orderedList.length) * 32)
         );
 
-        const isHidden = isChannelHidden(ch, cfg.src);
+        const isHidden = isChannelHidden(ch, cfg.src, categoryMap);
         const full = channelBody(ch, idMap, roleMap, emojiMap, cfg, log, warnings, manualReviews);
+        expectedOverwritesBySourceId.set(ch.id, full.permission_overwrites ?? []);
         full.position = position++;
         let created: any = null;
 
@@ -1136,18 +1395,15 @@ async function copyChannelsWithVerification(
                     recovered = true;
                     log(`[Права] Канал «${ch.name}» создан без начальных прав (применяем права по отдельности)...`, "info");
 
-                    // Применяем права по одному
-                    if (full.permission_overwrites?.length) {
-                        for (const ow of full.permission_overwrites) {
-                            try {
-                                await apiPut(`/channels/${created.id}/permissions/${ow.id}`, {
-                                    type: ow.type,
-                                    allow: ow.allow,
-                                    deny: ow.deny
-                                }, log, true);
-                            } catch { /* одиночный сбой не ломает канал */ }
-                        }
-                    }
+                    // Восстанавливаем все исходные права и фиксируем ошибки для финального аудита.
+                    await restorePermissionOverwrites(
+                        created.id,
+                        full.permission_overwrites ?? [],
+                        cfg.dst,
+                        log,
+                        warnings,
+                        ch.name
+                    );
                 } catch {
                     // Переход к попытке создания в корне
                 }
@@ -1166,6 +1422,14 @@ async function copyChannelsWithVerification(
                     idMap.set(ch.id, created.id);
                     createdCount++;
                     recovered = true;
+                    await restorePermissionOverwrites(
+                        created.id,
+                        full.permission_overwrites ?? [],
+                        cfg.dst,
+                        log,
+                        warnings,
+                        ch.name
+                    );
                     log(`[В корне] Канал «${ch.name}» создан в корне сервера (без родительской категории)`, "info");
                     manualReviews.push({
                         type: "channel",
@@ -1209,6 +1473,14 @@ async function copyChannelsWithVerification(
                 const created = await apiPost(`/guilds/${cfg.dst}/channels`, minimal, log, true);
                 idMap.set(ch.id, created.id);
                 createdCount++;
+                await restorePermissionOverwrites(
+                    created.id,
+                    expectedOverwritesBySourceId.get(ch.id) ?? [],
+                    cfg.dst,
+                    log,
+                    warnings,
+                    ch.name
+                );
                 const note = retryType === 0 && ch.type !== 0 ? " (адаптирован как текстовый)" : "";
                 log(`[Восстановлен] Канал «${ch.name}» успешно создан${note}`, "success");
             } catch (retryErr) {
@@ -1243,8 +1515,30 @@ async function copyChannelsWithVerification(
 
     for (const ch of orderedList) {
         const targetId = idMap.get(ch.id);
-        if (targetId && targetChannels.some((tc: any) => tc.id === targetId)) {
+        const targetChannel = targetId
+            ? targetChannels.find((tc: any) => tc.id === targetId)
+            : undefined;
+        if (targetChannel) {
             verifiedCount++;
+            const expectedOverwrites = expectedOverwritesBySourceId.get(ch.id) ?? [];
+            if (!permissionOverwritesMatch(expectedOverwrites, targetChannel.permission_overwrites ?? [])) {
+                failedCount++;
+                const message = `Права канала «${ch.name}» не прошли проверку: исходные permission overwrites не совпадают с целевыми.`;
+                log(message, "error");
+                warnings.push(message);
+                manualReviews.push({
+                    type: ch.type === 4 ? "category" : "channel",
+                    name: ch.name,
+                    id: ch.id,
+                    details: {
+                        channelType: ch.type,
+                        channelTypeName: SUPPORTED_CHANNEL_TYPES[ch.type]?.name ?? (ch.type === 4 ? "Категория" : "Канал"),
+                        overwritesCount: expectedOverwrites.length
+                    },
+                    reason: "Discord не сохранил полный набор permission overwrites",
+                    actionRequired: "Проверить права @everyone и ролевые права канала на целевом сервере"
+                });
+            }
         }
     }
 

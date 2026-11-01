@@ -6,6 +6,78 @@ const MAX_TOPIC_LENGTH = 1024;
 const UNSUPPORTED_TYPES = [6, 10, 11, 12];
 const SUPPORTED_TYPES = [0, 2, 4, 5, 13, 15, 16];
 
+function normalizePermissionBits(value) {
+    try {
+        return BigInt(value ?? "0").toString();
+    } catch {
+        return String(value ?? "0");
+    }
+}
+
+export function getRoleSettingsMismatches(source, target) {
+    if (!source || !target) return ["Роль отсутствует на целевом сервере"];
+
+    const mismatches = [];
+    if (normalizePermissionBits(source.permissions) !== normalizePermissionBits(target.permissions)) mismatches.push("permissions");
+    if (Number(source.color ?? 0) !== Number(target.color ?? 0)) mismatches.push("color");
+    if (!!source.hoist !== !!target.hoist) mismatches.push("hoist");
+    if (!!source.mentionable !== !!target.mentionable) mismatches.push("mentionable");
+
+    const sourceColors = source.colors ?? {};
+    const targetColors = target.colors ?? {};
+    for (const key of ["primary_color", "secondary_color", "tertiary_color"]) {
+        const sourceValue = sourceColors[key] ?? (key === "primary_color" ? source.color ?? 0 : null);
+        const targetValue = targetColors[key] ?? (key === "primary_color" ? target.color ?? 0 : null);
+        if (sourceValue !== targetValue) mismatches.push(key);
+    }
+    return mismatches;
+}
+
+test("Role verification accepts exact permission bitfields, including values beyond 32 bits", () => {
+    const source = {
+        permissions: "1099511629824",
+        color: 0x123456,
+        hoist: true,
+        mentionable: false,
+        colors: { primary_color: 0x123456 }
+    };
+    const target = {
+        permissions: "1099511629824",
+        color: 0x123456,
+        hoist: true,
+        mentionable: false,
+        colors: { primary_color: 0x123456 }
+    };
+    assert.deepEqual(getRoleSettingsMismatches(source, target), []);
+});
+
+test("Role verification detects stripped permissions and changed display settings", () => {
+    const source = {
+        permissions: "1099511629824",
+        color: 0x123456,
+        hoist: true,
+        mentionable: true,
+        colors: { primary_color: 0x123456, secondary_color: 0x654321 }
+    };
+    const target = {
+        permissions: "2048",
+        color: 0,
+        hoist: false,
+        mentionable: false,
+        colors: { primary_color: 0 }
+    };
+    assert.deepEqual(getRoleSettingsMismatches(source, target), [
+        "permissions", "color", "hoist", "mentionable", "primary_color", "secondary_color"
+    ]);
+});
+
+test("Role verification reports a missing mapped target role", () => {
+    assert.deepEqual(
+        getRoleSettingsMismatches({ permissions: "0" }, undefined),
+        ["Роль отсутствует на целевом сервере"]
+    );
+});
+
 // Helper: Token masking
 export function sanitizeToken(text) {
     if (!text) return "";
@@ -40,16 +112,23 @@ export function processTopicWatermark(ch, cfg, logCallback, reviewCollector) {
 }
 
 // Helper: Check hidden channel
-export function isChannelHidden(ch, srcGuildId) {
-    if (!ch.permission_overwrites) return false;
-    const everyoneOW = ch.permission_overwrites.find((ow) => ow.id === srcGuildId && ow.type === 0);
-    if (!everyoneOW) return false;
-    try {
-        const denyBig = BigInt(everyoneOW.deny || "0");
-        return (denyBig & 1024n) === 1024n;
-    } catch {
-        return false;
+export function isChannelHidden(ch, srcGuildId, categoryMap) {
+    const hasEveryoneViewDeny = (overwrites) => {
+        const everyoneOW = overwrites?.find((ow) => ow.id === srcGuildId && ow.type === 0);
+        if (!everyoneOW) return false;
+        try {
+            return (BigInt(everyoneOW.deny || "0") & 1024n) === 1024n;
+        } catch {
+            return false;
+        }
+    };
+
+    if (Array.isArray(ch.permission_overwrites) && ch.permission_overwrites.length > 0) {
+        return hasEveryoneViewDeny(ch.permission_overwrites);
     }
+
+    const parentCategory = ch.parent_id ? categoryMap?.get(ch.parent_id) : undefined;
+    return hasEveryoneViewDeny(parentCategory?.permission_overwrites);
 }
 
 // Helper: Channel tree and orphan planner
@@ -72,7 +151,7 @@ export function buildChannelPlan(channels, cfg, logCallback, reviewCollector) {
     const activeCategories = [];
 
     for (const cat of categories) {
-        const isHidden = isChannelHidden(cat, cfg.src);
+        const isHidden = isChannelHidden(cat, cfg.src, categoryMap);
         if (cfg.copyHiddenChannels === false && isHidden) {
             excludedCategories.add(cat.id);
             logCallback?.(`[Фильтрация] Скрытая категория «${cat.name}» исключена пользователем`, 'warn');
@@ -86,7 +165,7 @@ export function buildChannelPlan(channels, cfg, logCallback, reviewCollector) {
     const orphanedToRoot = [];
 
     for (const ch of nonCats) {
-        const isHidden = isChannelHidden(ch, cfg.src);
+        const isHidden = isChannelHidden(ch, cfg.src, categoryMap);
         if (cfg.copyHiddenChannels === false && isHidden) {
             skippedChannels.push({ channel: ch, reason: 'Скрытый канал отключен' });
             continue;
@@ -318,6 +397,32 @@ test('Requirement 9: Discord threads (types 10, 11, 12) and store (type 6) are s
     assert.ok(warnings.some(w => w.includes('Пропуск неподдерживаемых объектов')));
 });
 
+test('Requirement 8: Inherited category visibility is detected for channels without local overwrites', () => {
+    const category = {
+        id: 'private-category',
+        type: 4,
+        permission_overwrites: [{ id: 'guild1', type: 0, allow: '0', deny: '1024' }]
+    };
+    const inheritedChannel = {
+        id: 'inherited-private-channel',
+        type: 0,
+        parent_id: 'private-category',
+        permission_overwrites: []
+    };
+    const categories = new Map([[category.id, category]]);
+
+    assert.equal(isChannelHidden(inheritedChannel, 'guild1', categories), true);
+
+    const plan = buildChannelPlan(
+        [category, inheritedChannel],
+        { src: 'guild1', copyHiddenChannels: false, orphanChannelPolicy: 'root' }
+    );
+    assert.equal(plan.activeCategories.length, 0);
+    assert.equal(plan.plannedChannels.length, 0);
+    assert.equal(plan.skippedChannels.length, 1);
+    assert.equal(plan.skippedChannels[0].channel.id, inheritedChannel.id);
+});
+
 test('Requirement 8: Category tree — orphan policy "skip" skips children of excluded category', () => {
     const channels = [
         {
@@ -372,7 +477,8 @@ test('Requirement 8: Category tree — orphan policy "root" preserves child chan
             name: 'сиротский-чат',
             type: 0,
             parent_id: 'cat-hidden',
-            permission_overwrites: []
+            // Explicit public overwrite means this channel is not synced to the private category.
+            permission_overwrites: [{ id: 'guild1', type: 0, allow: '1024', deny: '0' }]
         }
     ];
 
@@ -489,6 +595,85 @@ test('Fix 1: Pre-flight returns false on critical access error exception (401/40
     assert.equal(resWarn, true, 'Non-critical error issues warning but does not abort prematurely');
     assert.equal(warnList.length, 1);
     assert.equal(errList.length, 0);
+});
+
+// Role feature compatibility: premium role icons and enhanced colors must be gated by target guild features.
+export function prepareRolePayloadForFeatures(role, features = [], iconData = null) {
+    const featureSet = new Set(features);
+    const body = {
+        name: role.name,
+        permissions: role.permissions || '0',
+        color: role.color ?? 0,
+        hoist: !!role.hoist,
+        mentionable: !!role.mentionable
+    };
+
+    if (featureSet.has('ROLE_ICONS')) {
+        if (role.unicode_emoji) body.unicode_emoji = role.unicode_emoji;
+        if (role.icon && iconData) body.icon = iconData;
+    }
+
+    if (role.colors && typeof role.colors === 'object') {
+        body.color = role.colors.primary_color ?? role.color ?? 0;
+        if (featureSet.has('ENHANCED_ROLE_COLORS')) {
+            body.colors = {
+                primary_color: role.colors.primary_color ?? role.color ?? 0,
+                ...(role.colors.secondary_color !== undefined ? { secondary_color: role.colors.secondary_color } : {}),
+                ...(role.colors.tertiary_color !== undefined ? { tertiary_color: role.colors.tertiary_color } : {})
+            };
+        }
+    }
+
+    return body;
+}
+
+test('Role fallback: icon fields are omitted when target guild has no ROLE_ICONS feature', () => {
+    const role = {
+        name: 'Supporter',
+        permissions: '2048',
+        color: 0x123456,
+        hoist: true,
+        mentionable: true,
+        icon: 'role-icon-hash',
+        unicode_emoji: '⭐'
+    };
+
+    const body = prepareRolePayloadForFeatures(role, []);
+    assert.equal(body.icon, undefined);
+    assert.equal(body.unicode_emoji, undefined);
+    assert.equal(body.name, 'Supporter');
+    assert.equal(body.permissions, '2048');
+    assert.equal(body.color, 0x123456);
+    assert.equal(body.hoist, true);
+    assert.equal(body.mentionable, true);
+});
+
+test('Role fallback: role icons are preserved when target guild has ROLE_ICONS', () => {
+    const role = { name: 'Supporter', icon: 'role-icon-hash', unicode_emoji: '⭐' };
+    const body = prepareRolePayloadForFeatures(role, ['ROLE_ICONS'], 'data:image/png;base64,AAAA');
+    assert.equal(body.icon, 'data:image/png;base64,AAAA');
+    assert.equal(body.unicode_emoji, '⭐');
+});
+
+test('Role fallback: premium gradient fields are omitted without ENHANCED_ROLE_COLORS', () => {
+    const role = {
+        name: 'Gradient',
+        color: 0x112233,
+        colors: { primary_color: 0x112233, secondary_color: 0x445566, tertiary_color: 0x778899 }
+    };
+    const body = prepareRolePayloadForFeatures(role, []);
+    assert.equal(body.color, 0x112233);
+    assert.equal(body.colors, undefined);
+});
+
+test('Role fallback: gradient fields are preserved when ENHANCED_ROLE_COLORS is available', () => {
+    const role = {
+        name: 'Gradient',
+        colors: { primary_color: 0x112233, secondary_color: 0x445566, tertiary_color: 0x778899 }
+    };
+    const body = prepareRolePayloadForFeatures(role, ['ENHANCED_ROLE_COLORS']);
+    assert.equal(body.colors.secondary_color, 0x445566);
+    assert.equal(body.colors.tertiary_color, 0x778899);
 });
 
 // Role color processing test
