@@ -1206,14 +1206,15 @@ async function copyChannelsWithVerification(
     if (cfg.selectedChannelIds) {
         const selected = new Set(cfg.selectedChannelIds);
         const selectedCategories = new Set<string>();
+        const requiredParentCategories = new Set<string>();
         for (const channel of usable) {
             if (selected.has(channel.id) && channel.type === 4) selectedCategories.add(channel.id);
-            if (selected.has(channel.id) && channel.parent_id) selectedCategories.add(channel.parent_id);
+            if (selected.has(channel.id) && channel.parent_id) requiredParentCategories.add(channel.parent_id);
         }
         usable = usable.filter((channel: any) =>
             selected.has(channel.id) ||
             (channel.parent_id && selectedCategories.has(channel.parent_id)) ||
-            (channel.type === 4 && selectedCategories.has(channel.id))
+            (channel.type === 4 && requiredParentCategories.has(channel.id))
         );
         log(`Выборочный перенос каналов: выбрано ${selected.size} объектов, с учётом категорий и зависимостей — ${usable.length}`, "info");
     }
@@ -1842,7 +1843,7 @@ async function runMerge(
     for (let index = 0; index < sourceIds.length; index++) {
         if (isAborted()) break;
         const sourceId = sourceIds[index];
-        const sourceGuild = GuildStore.getGuild(sourceId);
+        const sourceGuild = GuildStore.getGuilds()?.[sourceId];
         log(\`[Объединение \${index + 1}/\${sourceIds.length}] Источник: \${sourceGuild?.name ?? sourceId}\`, "info");
 
         let rolePositionOffset = 0;
@@ -2431,7 +2432,7 @@ function SettingsPanel() {
             <div style={{ display: "flex", gap: "8px" }}>
                 <button type="button" disabled={busy} onClick={() => setOperationMode("single")}
                     style={{ flex: 1, padding: "10px", borderRadius: "7px", border: operationMode === "single" ? "1px solid var(--brand-experiment)" : "1px solid var(--background-modifier-accent)", background: operationMode === "single" ? "rgba(88,101,242,0.16)" : "var(--background-secondary)", color: "var(--text-normal)", fontWeight: 700, cursor: "pointer" }}>Обычный перенос</button>
-                <button type="button" disabled={busy} onClick={() => { setOperationMode("merge"); setSettings(false); setImages(false); }}
+                <button type="button" disabled={busy} onClick={() => setOperationMode("merge")}
                     style={{ flex: 1, padding: "10px", borderRadius: "7px", border: operationMode === "merge" ? "1px solid var(--brand-experiment)" : "1px solid var(--background-modifier-accent)", background: operationMode === "merge" ? "rgba(88,101,242,0.16)" : "var(--background-secondary)", color: "var(--text-normal)", fontWeight: 700, cursor: "pointer" }}>Объединение серверов</button>
             </div>
             {operationMode === "merge" && (
