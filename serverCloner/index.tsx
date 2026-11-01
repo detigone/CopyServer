@@ -15,6 +15,8 @@
 
 import { PluginAuthor } from "@utils/types";
 import definePlugin from "@utils/types";
+// @ts-ignore Structure document helpers are plain JS so the same module can be exercised by Node tests.
+import { createStructureDocument, serializeStructureDocument, parseStructureDocument, buildStructureImportPlan } from "./structureDocument.mjs";
 import {
     useEffect,
     useMemo,
@@ -1907,6 +1909,133 @@ async function runMerge(
     onAuditReady(aggregate);
 }
 
+
+
+/**
+ * Rebuild a server structure from a portable Structure Document.
+ * This deliberately creates a fresh guild and never deletes or mutates a source guild.
+ */
+async function importStructureIntoGuild(
+    document: any,
+    targetGuildId: string,
+    log: LogFn,
+    onProgress?: ProgressFn
+): Promise<{ rolesCreated: number; channelsCreated: number; warnings: string[] }> {
+    const plan = buildStructureImportPlan(document, targetGuildId);
+    const warnings: string[] = [];
+    const targetGuild = await apiGet(\`/guilds/\${targetGuildId}\`, log);
+    const features = new Set<string>(targetGuild?.features ?? []);
+    const supportsEnhancedColors = features.has("ENHANCED_ROLE_COLORS");
+    const supportsCommunity = features.has("COMMUNITY");
+
+    onProgress?.("Применение разрешений @everyone...", 5);
+    await apiPatch(\`/guilds/\${targetGuildId}/roles/\${targetGuildId}\`, {
+        permissions: plan.everyonePermissions
+    }, log);
+
+    let rolesCreated = 0;
+    const rolePositionPayload: Array<{ id: string; position: number }> = [];
+    for (let index = 0; index < plan.roles.length; index++) {
+        const role = plan.roles[index];
+        onProgress?.(\`Создание ролей из документа (\${index + 1}/\${plan.roles.length}): \${role.name}\`,
+            8 + Math.round((index / Math.max(1, plan.roles.length)) * 27));
+        const body: any = {
+            name: role.name,
+            permissions: role.permissions,
+            color: Number(role.color) || 0,
+            hoist: !!role.hoist,
+            mentionable: !!role.mentionable
+        };
+        if (role.unicodeEmoji && features.has("ROLE_ICONS")) body.unicode_emoji = role.unicodeEmoji;
+        if (role.colors && Object.keys(role.colors).length) {
+            if (supportsEnhancedColors) body.colors = role.colors;
+            else if (role.colors.secondary_color != null || role.colors.tertiary_color != null) {
+                warnings.push(\`Роль «\${role.name}»: расширенные цвета не поддерживаются целевым сервером; сохранён основной цвет\`);
+            }
+        }
+        const created = await apiPost(\`/guilds/\${targetGuildId}/roles\`, body, log);
+        if (!created?.id) throw new Error(\`Discord не вернул ID для роли «\${role.name}»\`);
+        plan.roleMap.set(role.key, created.id);
+        rolePositionPayload.push({ id: created.id, position: Math.max(1, Number(role.position) || index + 1) });
+        rolesCreated++;
+    }
+
+    if (rolePositionPayload.length) {
+        onProgress?.("Восстановление иерархии ролей...", 38);
+        await apiPatch(\`/guilds/\${targetGuildId}/roles\`, rolePositionPayload, log);
+    }
+
+    // Resolve every overwrite before creating any channel. An unresolved role
+    // must stop the import rather than silently produce a channel with weaker access.
+    const allChannels = [...plan.categories, ...plan.channels];
+    const resolvedOverwrites = new Map<string, any[]>();
+    for (const channel of allChannels) {
+        resolvedOverwrites.set(channel.key, plan.mapOverwrites(channel.permissionOverwrites ?? []));
+    }
+
+    const channelIdMap = new Map<string, string>();
+    let channelsCreated = 0;
+    const ordered = [...plan.categories, ...plan.channels];
+    for (let index = 0; index < ordered.length; index++) {
+        const channel = ordered[index];
+        onProgress?.(\`Создание каналов из документа (\${index + 1}/\${ordered.length}): \${channel.name}\`,
+            42 + Math.round((index / Math.max(1, ordered.length)) * 50));
+
+        let type = Number(channel.type);
+        if (type === 5 && !supportsCommunity) {
+            type = 0;
+            warnings.push(\`Канал «\${channel.name}\»: тип объявлений преобразован в текстовый — на сервере не включено Сообщество\`);
+        } else if ((type === 15 || type === 16) && !supportsCommunity) {
+            type = 0;
+            warnings.push(\`Канал «\${channel.name}\»: форум/медиа преобразован в текстовый канал — на сервере не включено Сообщество\`);
+        } else if (type === 13 && !supportsCommunity) {
+            type = 2;
+            warnings.push(\`Канал «\${channel.name}\»: сцена преобразована в голосовой канал — на сервере не включено Сообщество\`);
+        }
+
+        const body: any = {
+            name: channel.name,
+            type,
+            position: index,
+            permission_overwrites: resolvedOverwrites.get(channel.key) ?? []
+        };
+        if (channel.parent) {
+            const parentId = channelIdMap.get(channel.parent);
+            if (!parentId) throw new Error(\`Для канала «\${channel.name}» не найдена созданная родительская категория\`);
+            body.parent_id = parentId;
+        }
+        const channelFields = [
+            "topic", "nsfw", "bitrate", "user_limit", "rate_limit_per_user", "rtc_region",
+            "video_quality_mode", "default_auto_archive_duration", "default_thread_rate_limit_per_user",
+            "default_sort_order", "default_forum_layout", "available_tags", "default_reaction_emoji"
+        ];
+        for (const field of channelFields) {
+            if (channel[field] !== undefined && channel[field] !== null && type === Number(channel.type)) body[field] = channel[field];
+        }
+        const created = await apiPost(\`/guilds/\${targetGuildId}/channels\`, body, log);
+        if (!created?.id) throw new Error(\`Discord не вернул ID для канала «\${channel.name}»\`);
+        channelIdMap.set(channel.key, created.id);
+        channelsCreated++;
+    }
+
+    onProgress?.("Проверка созданной структуры...", 96);
+    const [targetRoles, targetChannels] = await Promise.all([
+        apiGet(\`/guilds/\${targetGuildId}/roles\`, log),
+        apiGet(\`/guilds/\${targetGuildId}/channels\`, log)
+    ]);
+    const targetRoleIds = new Set((targetRoles ?? []).map((role: any) => String(role.id)));
+    for (const [key, id] of plan.roleMap.entries()) {
+        if (key !== "everyone" && !targetRoleIds.has(String(id))) warnings.push(\`Роль «\${key}» не найдена при контрольном чтении Discord API\`);
+    }
+    const targetChannelIds = new Set((targetChannels ?? []).map((channel: any) => String(channel.id)));
+    for (const [key, id] of channelIdMap.entries()) {
+        if (!targetChannelIds.has(String(id))) warnings.push(\`Канал «\${key}» не найден при контрольном чтении Discord API\`);
+    }
+    if (warnings.length) warnings.forEach(warning => log(warning, "warn"));
+    onProgress?.("Импорт структуры завершён", 100);
+    return { rolesCreated, channelsCreated, warnings };
+}
+
 interface LogEntry {
     id: string;
     time: string;
@@ -2072,6 +2201,10 @@ function SettingsPanel() {
     const [selectedChannelIds, setSelectedChannelIds] = useState<string[] | null>(null);
     const [showSelectionPanel, setShowSelectionPanel] = useState(false);
     const [loadingInventory, setLoadingInventory] = useState(false);
+    const [structureText, setStructureText] = useState("");
+    const [structureFileName, setStructureFileName] = useState("");
+    const [structureValidation, setStructureValidation] = useState<{ valid: boolean; errors: string[]; warnings: string[] } | null>(null);
+    const structureFileRef = useRef<HTMLInputElement>(null);
 
     // Модальные окна создания и очистки сервера (3-этапная защита от миссклика)
     const [showCreateGuildModal, setShowCreateGuildModal] = useState(false);
@@ -2252,6 +2385,115 @@ function SettingsPanel() {
         } catch (e: any) {
             log(`Не удалось создать сервер: ${errMsg(e)}`, "error");
             showToast("Ошибка при создании сервера", "failure");
+        } finally {
+            setBusy(false);
+        }
+    };
+
+
+
+    const downloadStructureText = (filename: string, text: string) => {
+        const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = filename;
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
+        URL.revokeObjectURL(url);
+    };
+
+    const exportStructureDocument = async () => {
+        if (!src) return showToast("Сначала выбери исходный сервер", "failure");
+        setBusy(true);
+        try {
+            onProgress("Экспорт ролей, каналов и разрешений...", 5);
+            const [rolesData, channelsData, guildData] = await Promise.all([
+                apiGet(\`/guilds/\${src}/roles\`, log),
+                apiGet(\`/guilds/\${src}/channels\`, log),
+                apiGet(\`/guilds/\${src}\`, log)
+            ]);
+            const document = createStructureDocument(guildData ?? srcGuild ?? { id: src, name: "Imported server" }, rolesData ?? [], channelsData ?? []);
+            const text = serializeStructureDocument(document);
+            const safeName = String(document.guild.name || "server").replace(/[^\\p{L}\\p{N}_-]+/gu, "_").slice(0, 48) || "server";
+            const filename = \`CopyServer_\${safeName}_Structure_v1.txt\`;
+            setStructureText(text);
+            setStructureFileName(filename);
+            setStructureValidation(parseStructureDocument(text));
+            downloadStructureText(filename, text);
+            log(\`Структура сервера экспортирована: \${document.roles.length} ролей, \${document.channels.length} каналов/категорий\`, "success");
+            showToast("Документ структуры скачан", "success");
+        } catch (error: any) {
+            log(\`Ошибка экспорта структуры: \${errMsg(error)}\`, "error");
+            showToast("Не удалось экспортировать структуру", "failure");
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const handleStructureFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+        try {
+            const text = await file.text();
+            const parsed = parseStructureDocument(text);
+            setStructureText(text);
+            setStructureFileName(file.name);
+            setStructureValidation(parsed);
+            log(\`Документ «\${file.name}» загружен и проверен: \${parsed.document.roles.length} ролей, \${parsed.document.channels.length} каналов/категорий\`, "success");
+            if (parsed.warnings.length) parsed.warnings.forEach((warning: string) => log(warning, "warn"));
+            showToast("Документ структуры загружен", "success");
+        } catch (error: any) {
+            setStructureText(await file.text().catch(() => ""));
+            setStructureFileName(file.name);
+            setStructureValidation({ valid: false, errors: [errMsg(error)], warnings: [] });
+            log(\`Документ не прошёл проверку: \${errMsg(error)}\`, "error");
+            showToast("Документ структуры содержит ошибки", "failure");
+        } finally {
+            event.target.value = "";
+        }
+    };
+
+    const validateStructureText = () => {
+        try {
+            const parsed = parseStructureDocument(structureText);
+            setStructureValidation(parsed);
+            log(\`Документ проверен: \${parsed.document.roles.length} ролей, \${parsed.document.channels.length} каналов/категорий\`, "success");
+            parsed.warnings.forEach((warning: string) => log(warning, "warn"));
+            showToast("Документ корректен", "success");
+        } catch (error: any) {
+            setStructureValidation({ valid: false, errors: [errMsg(error)], warnings: [] });
+            log(\`Ошибка проверки документа: \${errMsg(error)}\`, "error");
+            showToast("Документ содержит ошибки", "failure");
+        }
+    };
+
+    const createServerFromStructureDocument = async () => {
+        let document: any;
+        try {
+            document = parseStructureDocument(structureText).document;
+        } catch (error: any) {
+            setStructureValidation({ valid: false, errors: [errMsg(error)], warnings: [] });
+            return showToast("Сначала загрузи и проверь корректный TXT-документ", "failure");
+        }
+        setBusy(true);
+        setEntries([]);
+        setProgressPercent(0);
+        setProgressStep("Создание сервера из документа...");
+        let createdGuild: any = null;
+        try {
+            createdGuild = await createDiscordGuild(document.guild.name, log);
+            if (!createdGuild?.id) throw new Error("Discord не вернул ID нового сервера");
+            setExtraGuilds(prev => [...prev, createdGuild]);
+            setDst(createdGuild.id);
+            log(\`Создан целевой сервер «\${document.guild.name}». Начинаю импорт структуры...\`, "success");
+            const result = await importStructureIntoGuild(document, createdGuild.id, log, onProgress);
+            log(\`Импорт завершён: ролей — \${result.rolesCreated}, каналов/категорий — \${result.channelsCreated}, предупреждений — \${result.warnings.length}\`, result.warnings.length ? "warn" : "success");
+            showToast(result.warnings.length ? "Сервер создан; импорт завершён с предупреждениями" : "Сервер создан по документу", result.warnings.length ? "failure" : "success");
+        } catch (error: any) {
+            log(\`Импорт структуры остановлен: \${errMsg(error)}\`, "error");
+            showToast(createdGuild ? "Сервер создан частично: проверь журнал" : "Не удалось создать сервер", "failure");
         } finally {
             setBusy(false);
         }
@@ -2651,6 +2893,57 @@ function SettingsPanel() {
             )}
 
             </>}
+
+
+            {/* Portable Structure Documents */}
+            <div style={{
+                background: "var(--background-secondary, #2b2d31)",
+                border: "1px solid rgba(88, 101, 242, 0.35)",
+                borderRadius: "10px",
+                padding: "14px",
+                display: "flex",
+                flexDirection: "column",
+                gap: "10px"
+            }}>
+                <div>
+                    <div style={{ fontSize: "14px", fontWeight: 700, color: "var(--header-primary, #fff)" }}>Structure Documents · TXT v1</div>
+                    <div style={{ fontSize: "12px", color: "var(--text-muted, #949ba4)", marginTop: "4px" }}>
+                        Экспортируй структуру, отредактируй имена, категории, роли и права в TXT, затем создай новый сервер по документу.
+                    </div>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                    <button type="button" onClick={exportStructureDocument} disabled={busy || !src}
+                        style={{ padding: "9px 12px", borderRadius: "7px", border: "1px solid var(--brand-experiment, #5865f2)", background: "rgba(88,101,242,0.14)", color: "var(--text-normal)", fontWeight: 600, cursor: busy || !src ? "not-allowed" : "pointer" }}>
+                        Скачать структуру текущего сервера (.txt)
+                    </button>
+                    <button type="button" onClick={() => structureFileRef.current?.click()} disabled={busy}
+                        style={{ padding: "9px 12px", borderRadius: "7px", border: "1px solid var(--background-modifier-accent)", background: "var(--background-tertiary, #1e1f22)", color: "var(--text-normal)", fontWeight: 600, cursor: busy ? "not-allowed" : "pointer" }}>
+                        Загрузить TXT-документ
+                    </button>
+                    <input ref={structureFileRef} type="file" accept=".txt,text/plain,.json,application/json" onChange={handleStructureFileChange} style={{ display: "none" }} />
+                    <button type="button" onClick={validateStructureText} disabled={busy || !structureText.trim()}
+                        style={{ padding: "9px 12px", borderRadius: "7px", border: "1px solid var(--background-modifier-accent)", background: "var(--background-tertiary, #1e1f22)", color: "var(--text-normal)", fontWeight: 600, cursor: busy || !structureText.trim() ? "not-allowed" : "pointer" }}>
+                        Проверить документ
+                    </button>
+                    <button type="button" onClick={createServerFromStructureDocument} disabled={busy || !structureValidation?.valid || !structureText.trim()}
+                        style={{ padding: "9px 12px", borderRadius: "7px", border: "none", background: busy || !structureValidation?.valid ? "#4e5058" : "var(--brand-experiment, #5865f2)", color: "#fff", fontWeight: 700, cursor: busy || !structureValidation?.valid ? "not-allowed" : "pointer" }}>
+                        Создать сервер по документу
+                    </button>
+                </div>
+                {structureFileName && <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>Документ: {structureFileName}</div>}
+                {structureValidation && (
+                    <div style={{ borderRadius: "7px", padding: "9px 11px", background: structureValidation.valid ? "rgba(35,165,90,0.10)" : "rgba(218,55,60,0.10)", border: \`1px solid \${structureValidation.valid ? "rgba(35,165,90,0.35)" : "rgba(218,55,60,0.35)"}\`, fontSize: "11px" }}>
+                        <strong style={{ color: structureValidation.valid ? "#23a55a" : "#f23f43" }}>
+                            {structureValidation.valid ? "Документ корректен" : "Обнаружены ошибки"}
+                        </strong>
+                        {structureValidation.errors.map((item, index) => <div key={\`e-\${index}\`} style={{ marginTop: "4px" }}>{item}</div>)}
+                        {structureValidation.warnings.map((item, index) => <div key={\`w-\${index}\`} style={{ marginTop: "4px", color: "#f0b232" }}>Предупреждение: {item}</div>)}
+                    </div>
+                )}
+                <div style={{ fontSize: "11px", color: "var(--text-muted, #949ba4)" }}>
+                    Формат TXT v1 — редактируемый JSON. Discord ID заменяются внутренними ключами документа; права ALLOW/DENY сохраняются отдельно. Значки ролей и неподдерживаемые Discord-объекты не встраиваются в v1.
+                </div>
+            </div>
 
             {/* Special Section: Водяной знак, Stealth Mode и Скрытые каналы */}
             <div style={{
