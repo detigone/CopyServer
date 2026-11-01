@@ -74,6 +74,13 @@ export interface CopyCfg {
     stealthMode: boolean;
     copyHiddenChannels: boolean;
     orphanChannelPolicy: OrphanPolicy;
+    /** null = all objects; [] = none; otherwise only listed source IDs. */
+    selectedRoleIds?: string[] | null;
+    selectedChannelIds?: string[] | null;
+    skipRoleDuplicates?: boolean;
+    copyEveryonePermissions?: boolean;
+    rolePositionOffset?: number;
+    channelPositionOffset?: number;
 }
 
 export interface AuditItemReview {
@@ -447,11 +454,13 @@ async function copyRoles(
     const targetFeatures = new Set<string>(targetGuildForRoles?.features ?? []);
     const supportsRoleIcons = targetFeatures.has("ROLE_ICONS");
     const supportsEnhancedRoleColors = targetFeatures.has("ENHANCED_ROLE_COLORS");
-    const everyone = roles.find((r: any) => r.id === cfg.src);
+    const everyone = cfg.copyEveryonePermissions === false ? undefined : roles.find((r: any) => r.id === cfg.src);
+    const skipExistingRoles = cfg.skipRoleDuplicates ?? cfg.skipDuplicates;
 
     const rawOthers = roles.filter((r: any) => r.id !== cfg.src);
     let skippedBotRoles = 0;
     const filterable = rawOthers.filter((r: any) => {
+        if (cfg.selectedRoleIds && !cfg.selectedRoleIds.includes(r.id)) return false;
         if (r.managed) {
             log(`Роль «${r.name}» пропущена (интеграционная/бот-роль)`, "info");
             skippedBotRoles++;
@@ -468,29 +477,34 @@ async function copyRoles(
     const others = filterable.sort((a: any, b: any) => a.position - b.position || String(a.id).localeCompare(String(b.id)));
 
     let existingTargetRoles: any[] = [];
-    if (cfg.skipDuplicates) {
+    if (skipExistingRoles) {
         existingTargetRoles = (await apiGet(`/guilds/${cfg.dst}/roles`, log)) || [];
     }
 
-    // Синхронизация базовых прав роли @everyone
+    // @everyone is shared by the destination guild. During a merge it is
+    // intentionally sourced from the first donor only, never reset by later donors.
     roleMap.set(cfg.src, cfg.dst);
-    try {
-        await apiPatch(`/guilds/${cfg.dst}/roles/${cfg.dst}`, {
-            permissions: everyone?.permissions ?? "0"
-        }, log);
-        log("Роль @everyone: базовые разрешения синхронизированы", "success");
-    } catch (err) {
-        const m = `Не удалось синхронизировать роль @everyone: ${errMsg(err)}`;
-        log(m, "warn");
-        warnings.push(m);
-        manualReviews.push({
-            type: "role",
-            name: "@everyone",
-            reason: "Ошибка синхронизации прав",
-            actionRequired: "Вручную проверить базовые права @everyone на целевом сервере"
-        });
+    if (everyone) {
+        try {
+            await apiPatch(`/guilds/${cfg.dst}/roles/${cfg.dst}`, {
+                permissions: everyone.permissions ?? "0"
+            }, log);
+            log("Роль @everyone: базовые разрешения синхронизированы", "success");
+        } catch (err) {
+            const m = `Не удалось синхронизировать роль @everyone: ${errMsg(err)}`;
+            log(m, "warn");
+            warnings.push(m);
+            manualReviews.push({
+                type: "role",
+                name: "@everyone",
+                reason: "Ошибка синхронизации прав",
+                actionRequired: "Вручную проверить базовые права @everyone на целевом сервере"
+            });
+        }
+        await sleep(cfg.stealthMode ? 800 : 400);
+    } else {
+        log("Роль @everyone оставлена без изменений: права уже заданы первым источником объединения", "info");
     }
-    await sleep(cfg.stealthMode ? 800 : 400);
 
     let createdCount = 0;
     let matchedCount = 0;
@@ -505,7 +519,7 @@ async function copyRoles(
         idx++;
         onProgress?.(`Создание ролей (${idx}/${others.length}): ${r.name}`, Math.round(10 + (idx / others.length) * 20));
 
-        if (cfg.skipDuplicates) {
+        if (skipExistingRoles) {
             // Do not accidentally map a source role to a managed integration role.
             const candidates = existingTargetRoles.filter((er: any) =>
                 !er.managed && er.id !== cfg.dst && er.name.toLowerCase() === r.name.toLowerCase()
@@ -761,7 +775,7 @@ async function copyRoles(
     const positions: any[] = [{ id: cfg.dst, position: 0 }];
     others.forEach((r: any, i: number) => {
         const nid = roleMap.get(r.id);
-        if (nid) positions.push({ id: nid, position: i + 1 });
+        if (nid) positions.push({ id: nid, position: i + 1 + (cfg.rolePositionOffset ?? 0) });
     });
     try {
         await apiPatch(`/guilds/${cfg.dst}/roles`, positions, log);
@@ -1190,7 +1204,25 @@ async function copyChannelsWithVerification(
     // 1. Фильтрация и явное предупреждение о неподдерживаемых объектах (ветки и store)
     const UNSUPPORTED_TYPES = [6, 10, 11, 12];
     const unsupported = allChannels.filter((c: any) => UNSUPPORTED_TYPES.includes(c.type));
-    const usable = allChannels.filter((c: any) => !UNSUPPORTED_TYPES.includes(c.type));
+    let usable = allChannels.filter((c: any) => !UNSUPPORTED_TYPES.includes(c.type));
+
+    // Selective mode keeps category/channel hierarchy intact: selecting a
+    // category includes its children; selecting a child also includes its parent.
+    if (cfg.selectedChannelIds) {
+        const selected = new Set(cfg.selectedChannelIds);
+        const selectedCategories = new Set<string>();
+        const requiredParentCategories = new Set<string>();
+        for (const channel of usable) {
+            if (selected.has(channel.id) && channel.type === 4) selectedCategories.add(channel.id);
+            if (selected.has(channel.id) && channel.parent_id) requiredParentCategories.add(channel.parent_id);
+        }
+        usable = usable.filter((channel: any) =>
+            selected.has(channel.id) ||
+            (channel.parent_id && selectedCategories.has(channel.parent_id)) ||
+            (channel.type === 4 && requiredParentCategories.has(channel.id))
+        );
+        log(`Выборочный перенос каналов: выбрано ${selected.size} объектов, с учётом категорий и зависимостей — ${usable.length}`, "info");
+    }
 
     if (unsupported.length > 0) {
         const typesSummary = Array.from(new Set(unsupported.map((c: any) => c.type))).join(", ");
@@ -1282,7 +1314,7 @@ async function copyChannelsWithVerification(
     const orderedList = [...sortedCats, ...sortedOthers];
     log(`Итоговый план создания структуры: ${sortedCats.length} категорий, ${sortedOthers.length} каналов (всего: ${orderedList.length})`, "info");
 
-    let position = 1;
+    let position = (cfg.channelPositionOffset ?? 0) + 1;
     let idx = 0;
     let createdCount = 0;
     let failedCount = 0;
@@ -1786,6 +1818,95 @@ async function runCopy(
     }
 }
 
+
+/**
+ * Merge several source guilds into one destination. Each source gets isolated
+ * ID maps through runCopy, preserving its own role/channel permission references.
+ * Server-wide settings are not merged; @everyone is copied from the first source.
+ */
+async function runMerge(
+    cfg: CopyCfg,
+    sourceIds: string[],
+    log: LogFn,
+    onProgress: ProgressFn,
+    isAborted: () => boolean,
+    onAuditReady: (audit: AuditReport) => void
+): Promise<void> {
+    const aggregate: AuditReport = {
+        status: "success",
+        roles: { expected: 0, created: 0, matchedExisting: 0, skipped: 0, verified: 0, failed: 0 },
+        channels: { expected: 0, created: 0, matchedExisting: 0, skipped: 0, verified: 0, failed: 0 },
+        emojis: { expected: 0, created: 0, matchedExisting: 0, skipped: 0, verified: 0, failed: 0 },
+        hiddenChannelsCount: 0, settingsApplied: false, unsupportedSkippedCount: 0,
+        orphanAdjustedCount: 0, warnings: [], errors: [], manualReviewList: [], durationSec: 0
+    };
+    const started = Date.now();
+    const addMetrics = (target: ObjectMetrics, value: ObjectMetrics) => {
+        for (const key of ["expected", "created", "matchedExisting", "skipped", "verified", "failed"] as const) target[key] += value[key];
+    };
+
+    for (let index = 0; index < sourceIds.length; index++) {
+        if (isAborted()) break;
+        const sourceId = sourceIds[index];
+        const sourceGuild = GuildStore.getGuilds()?.[sourceId];
+        log(`[Объединение ${index + 1}/${sourceIds.length}] Источник: ${sourceGuild?.name ?? sourceId}`, "info");
+
+        let rolePositionOffset = 0;
+        let channelPositionOffset = 0;
+        try {
+            const [targetRoles, targetChannels] = await Promise.all([
+                apiGet(`/guilds/${cfg.dst}/roles`, log),
+                apiGet(`/guilds/${cfg.dst}/channels`, log)
+            ]);
+            rolePositionOffset = Math.max(0, ...(targetRoles ?? []).map((role: any) => Number(role.position) || 0));
+            channelPositionOffset = (targetChannels ?? []).length;
+        } catch (error: any) {
+            aggregate.errors.push(`Не удалось подготовить целевой сервер перед источником ${sourceId}: ${errMsg(error)}`);
+            aggregate.status = "partial_with_errors";
+            break;
+        }
+
+        const sourceResult: { report: AuditReport | null } = { report: null };
+        const sourceCfg: CopyCfg = {
+            ...cfg, src: sourceId,
+            roles: cfg.roles || cfg.channels,
+            settings: false, images: false,
+            skipRoleDuplicates: false,
+            copyEveryonePermissions: index === 0,
+            rolePositionOffset, channelPositionOffset,
+            selectedRoleIds: null, selectedChannelIds: null
+        };
+        await runCopy(
+            sourceCfg, log,
+            (step, percent) => onProgress(`Источник ${index + 1}/${sourceIds.length}: ${step}`,
+                Math.min(99, Math.round((index * 100 + percent) / sourceIds.length))),
+            isAborted,
+            report => { sourceResult.report = report; }
+        );
+        const sourceReport = sourceResult.report;
+        if (!sourceReport) continue;
+        addMetrics(aggregate.roles, sourceReport.roles);
+        addMetrics(aggregate.channels, sourceReport.channels);
+        addMetrics(aggregate.emojis, sourceReport.emojis);
+        aggregate.hiddenChannelsCount += sourceReport.hiddenChannelsCount;
+        aggregate.unsupportedSkippedCount += sourceReport.unsupportedSkippedCount;
+        aggregate.orphanAdjustedCount += sourceReport.orphanAdjustedCount;
+        aggregate.warnings.push(...sourceReport.warnings);
+        aggregate.errors.push(...sourceReport.errors);
+        aggregate.manualReviewList.push(...sourceReport.manualReviewList);
+        if (sourceReport.status === "failed" || sourceReport.status === "partial_with_errors") aggregate.status = "partial_with_errors";
+        if (sourceReport.status === "aborted") { aggregate.status = "aborted"; break; }
+    }
+
+    aggregate.durationSec = Number(((Date.now() - started) / 1000).toFixed(1));
+    if (isAborted()) aggregate.status = "aborted";
+    else if (aggregate.errors.length || aggregate.roles.failed || aggregate.channels.failed || aggregate.manualReviewList.length) aggregate.status = "partial_with_errors";
+    onProgress(aggregate.status === "success" ? "Объединение завершено" : "Объединение завершено с замечаниями", 100);
+    log(`Объединение серверов завершено за ${aggregate.durationSec} сек.; ошибок: ${aggregate.errors.length}, ручных проверок: ${aggregate.manualReviewList.length}`,
+        aggregate.status === "success" ? "success" : "warn");
+    onAuditReady(aggregate);
+}
+
 interface LogEntry {
     id: string;
     time: string;
@@ -1929,6 +2050,8 @@ function SettingsPanel() {
 
     const [src, setSrc] = useState(current ?? "");
     const [dst, setDst] = useState("");
+    const [operationMode, setOperationMode] = useState<"single" | "merge">("single");
+    const [mergeSourceIds, setMergeSourceIds] = useState<string[]>([]);
     const [roles, setRoles] = useState(true);
     const [channels, setChannels] = useState(true);
     const [emojis, setEmojis] = useState(true);
@@ -1943,6 +2066,12 @@ function SettingsPanel() {
     const [stealthMode, setStealthMode] = useState(true);
     const [copyHiddenChannels, setCopyHiddenChannels] = useState(true);
     const [orphanChannelPolicy, setOrphanChannelPolicy] = useState<OrphanPolicy>("skip");
+    const [sourceRoles, setSourceRoles] = useState<any[]>([]);
+    const [sourceChannels, setSourceChannels] = useState<any[]>([]);
+    const [selectedRoleIds, setSelectedRoleIds] = useState<string[] | null>(null);
+    const [selectedChannelIds, setSelectedChannelIds] = useState<string[] | null>(null);
+    const [showSelectionPanel, setShowSelectionPanel] = useState(false);
+    const [loadingInventory, setLoadingInventory] = useState(false);
 
     // Модальные окна создания и очистки сервера (3-этапная защита от миссклика)
     const [showCreateGuildModal, setShowCreateGuildModal] = useState(false);
@@ -2021,7 +2150,48 @@ function SettingsPanel() {
         }
     };
 
+    const loadSelectionInventory = async () => {
+        if (!src) return showToast("Сначала выбери исходный сервер", "failure");
+        setLoadingInventory(true);
+        try {
+            const [rolesData, channelsData] = await Promise.all([
+                apiGet(`/guilds/${src}/roles`, log),
+                apiGet(`/guilds/${src}/channels`, log)
+            ]);
+            setSourceRoles((rolesData ?? []).filter((role: any) => role.id !== src && !role.managed && !role.tags?.bot_id && !role.tags?.integration_id));
+            setSourceChannels((channelsData ?? []).filter((channel: any) => ![6, 10, 11, 12].includes(channel.type)));
+            setSelectedRoleIds(null);
+            setSelectedChannelIds(null);
+            setShowSelectionPanel(true);
+            log("Инвентаризация исходного сервера загружена. По умолчанию выбраны все доступные роли и каналы.", "success");
+        } catch (error: any) {
+            log(`Не удалось загрузить список объектов: ${errMsg(error)}`, "error");
+            showToast("Не удалось загрузить объекты исходного сервера", "failure");
+        } finally {
+            setLoadingInventory(false);
+        }
+    };
+
+    const toggleRoleSelection = (id: string) => {
+        const current = selectedRoleIds ?? sourceRoles.map((role: any) => role.id);
+        setSelectedRoleIds(current.includes(id) ? current.filter(value => value !== id) : [...current, id]);
+    };
+
+    const toggleChannelSelection = (id: string) => {
+        const current = selectedChannelIds ?? sourceChannels.map((channel: any) => channel.id);
+        setSelectedChannelIds(current.includes(id) ? current.filter(value => value !== id) : [...current, id]);
+    };
+
     const handleStartClick = () => {
+        if (operationMode === "merge") {
+            if (mergeSourceIds.length < 2) return showToast("Для объединения выбери минимум два исходных сервера", "failure");
+            if (!dst) return showToast("Выбери или создай сервер назначения", "failure");
+            if (!extraGuilds.some((guild: any) => guild.id === dst)) return showToast("Для объединения сначала создай новый целевой сервер через кнопку «Создать сервер»", "failure");
+            if (mergeSourceIds.includes(dst)) return showToast("Целевой сервер не может быть одним из исходных", "failure");
+            if (!roles && !channels && !emojis) return showToast("Выбери хотя бы роли, каналы или эмодзи", "failure");
+            setShowConfirm(true);
+            return;
+        }
         if (!src || !dst) return showToast("Выбери оба сервера!", "failure");
         if (src === dst) return showToast("Исходный и целевой сервер должны отличаться!", "failure");
         if (!roles && !channels && !emojis && !settings)
@@ -2038,32 +2208,40 @@ function SettingsPanel() {
         setProgressPercent(0);
         setProgressStep("Инициализация защищенного копирования...");
 
-        runCopy(
-            {
-                src,
-                dst,
-                roles,
-                channels,
-                emojis,
-                settings,
-                images,
-                userOW,
-                skipDuplicates,
-                watermark,
-                watermarkText,
-                stealthMode,
-                copyHiddenChannels,
-                orphanChannelPolicy,
-            },
-            log,
-            onProgress,
-            () => abortRef.current,
-            (report) => setAuditReport(report)
-        ).finally(() => setBusy(false));
+        let roleIdsForRun = selectedRoleIds;
+        let rolesForRun = roles;
+        if (channels && sourceChannels.length > 0) {
+            const chosenChannels = selectedChannelIds === null ? null : new Set(selectedChannelIds);
+            const selectedCategories = new Set(sourceChannels.filter((channel: any) => channel.type === 4 && chosenChannels?.has(channel.id)).map((channel: any) => channel.id));
+            const requiredParents = new Set(sourceChannels.filter((channel: any) => chosenChannels?.has(channel.id) && channel.parent_id).map((channel: any) => channel.parent_id));
+            const includedChannels = sourceChannels.filter((channel: any) => chosenChannels === null || chosenChannels.has(channel.id) || (channel.parent_id && selectedCategories.has(channel.parent_id)) || (channel.type === 4 && requiredParents.has(channel.id)));
+            const requiredRoleIds = Array.from(new Set(includedChannels.flatMap((channel: any) => (channel.permission_overwrites ?? []).filter((overwrite: any) => overwrite.type === 0 && overwrite.id !== src).map((overwrite: any) => overwrite.id))));
+            if (roles) {
+                if (selectedRoleIds !== null) roleIdsForRun = Array.from(new Set([...selectedRoleIds, ...requiredRoleIds]));
+            } else {
+                roleIdsForRun = requiredRoleIds;
+                rolesForRun = requiredRoleIds.length > 0;
+            }
+            if (requiredRoleIds.length > 0) log(`Для сохранения прав выбранных каналов автоматически добавлено ролей: ${requiredRoleIds.length}`, "info");
+        } else if (channels && !roles) {
+            // If the inventory was not loaded, preserve channel overwrites conservatively.
+            rolesForRun = true;
+            roleIdsForRun = null;
+            log("Список каналов не загружен: для сохранения их прав будут перенесены все пользовательские роли", "warn");
+        }
+        const baseCfg: CopyCfg = {
+            src, dst, roles: rolesForRun, channels, emojis, settings, images, userOW, skipDuplicates,
+            watermark, watermarkText, stealthMode, copyHiddenChannels, orphanChannelPolicy,
+            selectedRoleIds: roleIdsForRun, selectedChannelIds
+        };
+        const task = operationMode === "merge"
+            ? runMerge(baseCfg, mergeSourceIds, log, onProgress, () => abortRef.current, report => setAuditReport(report))
+            : runCopy(baseCfg, log, onProgress, () => abortRef.current, report => setAuditReport(report));
+        task.finally(() => setBusy(false));
     };
 
     const handleCreateGuild = async () => {
-        const nameToUse = (newGuildName.trim() || `[Клон] ${srcGuild?.name || "Новый сервер"}`).trim();
+        const nameToUse = (newGuildName.trim() || (operationMode === "merge" ? "Объединённый сервер" : `[Клон] ${srcGuild?.name || "Новый сервер"}`)).trim();
         setShowCreateGuildModal(false);
         setBusy(true);
         try {
@@ -2081,7 +2259,7 @@ function SettingsPanel() {
 
     const handleOpenPurge = () => {
         if (!dst) return showToast("Выбери целевой сервер для очистки!", "failure");
-        if (dst === src) return showToast("Запрещено: нельзя очищать исходный сервер-донор!", "failure");
+        if (dst === src || (operationMode === "merge" && mergeSourceIds.includes(dst))) return showToast("Запрещено: нельзя очищать сервер-источник объединения!", "failure");
         setPurgeStep(1);
         setShowPurgeModal(true);
     };
@@ -2279,6 +2457,28 @@ function SettingsPanel() {
                 </div>
             )}
 
+            <div style={{ display: "flex", gap: "8px" }}>
+                <button type="button" disabled={busy} onClick={() => setOperationMode("single")}
+                    style={{ flex: 1, padding: "10px", borderRadius: "7px", border: operationMode === "single" ? "1px solid var(--brand-experiment)" : "1px solid var(--background-modifier-accent)", background: operationMode === "single" ? "rgba(88,101,242,0.16)" : "var(--background-secondary)", color: "var(--text-normal)", fontWeight: 700, cursor: "pointer" }}>Обычный перенос</button>
+                <button type="button" disabled={busy} onClick={() => setOperationMode("merge")}
+                    style={{ flex: 1, padding: "10px", borderRadius: "7px", border: operationMode === "merge" ? "1px solid var(--brand-experiment)" : "1px solid var(--background-modifier-accent)", background: operationMode === "merge" ? "rgba(88,101,242,0.16)" : "var(--background-secondary)", color: "var(--text-normal)", fontWeight: 700, cursor: "pointer" }}>Объединение серверов</button>
+            </div>
+            {operationMode === "merge" && (
+                <div style={{ background: "var(--background-secondary)", borderRadius: "9px", padding: "14px", border: "1px solid var(--background-modifier-accent)" }}>
+                    <strong style={{ fontSize: "13px" }}>Серверы-источники ({mergeSourceIds.length} выбрано)</strong>
+                    <div style={{ maxHeight: "190px", overflowY: "auto", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "7px", marginTop: "10px" }}>
+                        {allGuilds.filter((guild: any) => guild.id !== dst).map((guild: any) => (
+                            <label key={guild.id} style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" }}>
+                                <input type="checkbox" checked={mergeSourceIds.includes(guild.id)} disabled={busy} onChange={() => setMergeSourceIds(currentIds => currentIds.includes(guild.id) ? currentIds.filter(id => id !== guild.id) : [...currentIds, guild.id])} />
+                                <span>{guild.name}</span>
+                            </label>
+                        ))}
+                    </div>
+                    <div style={{ marginTop: "10px", fontSize: "11px", color: "var(--text-muted)" }}>
+                        Совпадающие названия сохраняются; одноимённые роли остаются отдельными. Настройки сервера не смешиваются, права @everyone берутся из первого источника. Для сохранения прав каналов роли автоматически включаются при переносе каналов.
+                    </div>
+                </div>
+            )}
             {/* Server Pickers */}
             <div style={{
                 display: "grid",
@@ -2302,7 +2502,7 @@ function SettingsPanel() {
                     </label>
                     <select
                         value={src}
-                        onChange={e => setSrc(e.target.value)}
+                        onChange={e => { setSrc(e.target.value); setShowSelectionPanel(false); setSourceRoles([]); setSourceChannels([]); setSelectedRoleIds(null); setSelectedChannelIds(null); }}
                         disabled={busy}
                         style={{
                             width: "100%",
@@ -2336,7 +2536,7 @@ function SettingsPanel() {
                     </label>
                     <select
                         value={dst}
-                        onChange={e => setDst(e.target.value)}
+                        onChange={e => { const nextDst = e.target.value; setDst(nextDst); if (operationMode === "merge") setMergeSourceIds(currentIds => currentIds.filter(id => id !== nextDst)); }}
                         disabled={busy || isPurging}
                         style={{
                             width: "100%",
@@ -2359,7 +2559,7 @@ function SettingsPanel() {
                         <button
                             type="button"
                             onClick={() => {
-                                setNewGuildName(srcGuild ? `[Клон] ${srcGuild.name}` : "Новый сервер");
+                                setNewGuildName(operationMode === "merge" ? "Объединённый сервер" : (srcGuild ? `[Клон] ${srcGuild.name}` : "Новый сервер"));
                                 setShowCreateGuildModal(true);
                             }}
                             disabled={busy || isPurging}
@@ -2381,7 +2581,7 @@ function SettingsPanel() {
                         <button
                             type="button"
                             onClick={handleOpenPurge}
-                            disabled={busy || isPurging || !dst || dst === src}
+                            disabled={busy || isPurging || !dst || dst === src || (operationMode === "merge" && mergeSourceIds.includes(dst))}
                             style={{
                                 flex: 1,
                                 padding: "7px 10px",
@@ -2401,6 +2601,56 @@ function SettingsPanel() {
                     </div>
                 </div>
             </div>
+
+            {operationMode === "single" && <>
+            <div style={{ display: "flex", gap: "8px" }}>
+                <button type="button" onClick={loadSelectionInventory} disabled={busy || loadingInventory || !src}
+                    style={{ flex: 1, padding: "9px 12px", borderRadius: "7px", border: "1px solid var(--brand-experiment, #5865f2)", background: "rgba(88,101,242,0.12)", color: "var(--brand-experiment, #8ea1ff)", fontWeight: 600, cursor: busy || loadingInventory || !src ? "not-allowed" : "pointer" }}>
+                    {loadingInventory ? "Загрузка объектов..." : "Выбрать конкретные роли и каналы"}
+                </button>
+                {showSelectionPanel && <button type="button" onClick={() => { setSelectedRoleIds(null); setSelectedChannelIds(null); }} disabled={busy}
+                    style={{ padding: "9px 12px", borderRadius: "7px", border: "1px solid var(--background-modifier-accent)", background: "var(--background-secondary)", color: "var(--text-normal)", cursor: "pointer" }}>Выбрать всё</button>}
+            </div>
+
+            {showSelectionPanel && (
+                <div style={{ background: "var(--background-secondary, #2b2d31)", border: "1px solid var(--background-modifier-accent)", borderRadius: "9px", padding: "14px", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "14px" }}>
+                    <div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                            <strong style={{ fontSize: "13px" }}>Роли ({selectedRoleIds === null ? sourceRoles.length : selectedRoleIds.length}/{sourceRoles.length})</strong>
+                            <button type="button" onClick={() => setSelectedRoleIds([])} disabled={busy} style={{ background: "transparent", border: 0, color: "var(--brand-experiment)", cursor: "pointer", fontSize: "11px" }}>Снять все</button>
+                        </div>
+                        <div style={{ maxHeight: "240px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "5px" }}>
+                            {sourceRoles.map((role: any) => (
+                                <label key={role.id} style={{ display: "flex", gap: "8px", alignItems: "center", fontSize: "12px" }}>
+                                    <input type="checkbox" checked={selectedRoleIds === null || selectedRoleIds.includes(role.id)} disabled={busy} onChange={() => toggleRoleSelection(role.id)} />
+                                    <span>{role.name}</span>
+                                </label>
+                            ))}
+                            {!sourceRoles.length && <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>Пользовательских ролей нет</span>}
+                        </div>
+                    </div>
+                    <div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                            <strong style={{ fontSize: "13px" }}>Каналы и категории ({selectedChannelIds === null ? sourceChannels.length : selectedChannelIds.length}/{sourceChannels.length})</strong>
+                            <button type="button" onClick={() => setSelectedChannelIds([])} disabled={busy} style={{ background: "transparent", border: 0, color: "var(--brand-experiment)", cursor: "pointer", fontSize: "11px" }}>Снять все</button>
+                        </div>
+                        <div style={{ maxHeight: "240px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "5px" }}>
+                            {[...sourceChannels].sort((a: any, b: any) => (a.type === 4 ? -1 : b.type === 4 ? 1 : a.position - b.position)).map((channel: any) => (
+                                <label key={channel.id} style={{ display: "flex", gap: "8px", alignItems: "center", fontSize: "12px", paddingLeft: channel.type === 4 ? 0 : 12 }}>
+                                    <input type="checkbox" checked={selectedChannelIds === null || selectedChannelIds.includes(channel.id)} disabled={busy} onChange={() => toggleChannelSelection(channel.id)} />
+                                    <span>{channel.type === 4 ? "▰ " : "# "}{channel.name}</span>
+                                </label>
+                            ))}
+                            {!sourceChannels.length && <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>Каналов нет</span>}
+                        </div>
+                    </div>
+                    <div style={{ gridColumn: "1 / -1", fontSize: "11px", color: "var(--text-muted)" }}>
+                        Выбор категории автоматически включает её дочерние каналы. Выбор отдельного канала автоматически добавляет его родительскую категорию. Роли, используемые в правах выбранных каналов и категорий, добавляются автоматически, чтобы сохранить permission overwrites.
+                    </div>
+                </div>
+            )}
+
+            </>}
 
             {/* Special Section: Водяной знак, Stealth Mode и Скрытые каналы */}
             <div style={{
@@ -2568,7 +2818,7 @@ function SettingsPanel() {
                     <DiscordSwitch
                         checked={settings}
                         onChange={setSettings}
-                        disabled={busy}
+                        disabled={busy || operationMode === "merge"}
                         title="Основные настройки сервера"
                         subtitle="Название, верификация, AFK, системные каналы и оповещения"
                         icon={<span>⚙️</span>}
@@ -2577,7 +2827,7 @@ function SettingsPanel() {
                     <DiscordSwitch
                         checked={images}
                         onChange={setImages}
-                        disabled={busy}
+                        disabled={busy || operationMode === "merge"}
                         title="Иконка и баннер Ultra-HD"
                         subtitle="Автоскачивание и загрузка графики сервера до 4096px"
                         icon={<span>🎨</span>}
@@ -2626,7 +2876,7 @@ function SettingsPanel() {
                         ) : (
                             <>
                                 <span>🚀</span>
-                                <span>Запустить безопасное клонирование</span>
+                                <span>{operationMode === "merge" ? "Запустить объединение серверов" : "Запустить безопасное клонирование"}</span>
                             </>
                         )}
                     </button>
@@ -2979,15 +3229,21 @@ function SettingsPanel() {
                     }}>
                         <div style={{ padding: "18px 22px", borderBottom: "1px solid var(--background-modifier-accent, #3f4147)" }}>
                             <div style={{ fontSize: "17px", fontWeight: 700, color: "var(--header-primary, #ffffff)" }}>
-                                Запустить безопасное клонирование?
+                                {operationMode === "merge" ? "Запустить объединение серверов?" : "Запустить безопасное клонирование?"}
                             </div>
                         </div>
                         <div style={{ padding: "18px 22px", display: "flex", flexDirection: "column", gap: "12px", fontSize: "13px", color: "var(--text-normal, #dbdee1)" }}>
-                            <p>Вы собираетесь перенести конфигурацию сервера:</p>
+                            <p>{operationMode === "merge" ? "Вы собираетесь объединить выбранные серверы в один целевой сервер:" : "Вы собираетесь перенести конфигурацию сервера:"}</p>
                             <div style={{ background: "var(--background-secondary, #2b2d31)", padding: "12px", borderRadius: "8px", fontSize: "13px", display: "flex", flexDirection: "column", gap: "6px" }}>
-                                <div><strong>Исходный:</strong> {srcGuild?.name || src}</div>
+                                {operationMode === "merge" ? (
+                                    <>
+                                        <div><strong>Источники:</strong></div>
+                                        {mergeSourceIds.map(id => <div key={id}>• {allGuilds.find((guild: any) => guild.id === id)?.name || id}</div>)}
+                                    </>
+                                ) : <div><strong>Исходный:</strong> {srcGuild?.name || src}</div>}
                                 <div><strong>Целевой:</strong> {dstGuild?.name || dst}</div>
                             </div>
+                            {operationMode === "merge" && <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>Серверные настройки не смешиваются. @everyone берётся из первого источника. Одноимённые роли сохраняются отдельно.</div>}
                             <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                                 <div>• <strong>Каналы:</strong> {channels ? (copyHiddenChannels ? "Все поддерживаемые каналы (включая скрытые с правами, ветки исключены)" : "Только публичные (скрытые исключены)") : "Отключено в пресете"}</div>
                                 <div>• <strong>Orphan Policy:</strong> {orphanChannelPolicy === "root" ? "Переносить каналы без категории в корень" : "Исключать дочерние каналы вместе с категорией"}</div>
