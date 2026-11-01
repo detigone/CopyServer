@@ -2756,11 +2756,19 @@ function SettingsPanel() {
                 </div>
             )}
 
-            <div style={{ display: "flex", gap: "8px" }}>
+            <div style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                gap: "8px",
+                padding: "6px",
+                borderRadius: "12px",
+                background: "var(--background-secondary, #2b2d31)",
+                border: "1px solid var(--background-modifier-accent, #3f4147)"
+            }}>
                 <button type="button" disabled={busy} onClick={() => setOperationMode("single")}
-                    style={{ flex: 1, padding: "10px", borderRadius: "7px", border: operationMode === "single" ? "1px solid var(--brand-experiment)" : "1px solid var(--background-modifier-accent)", background: operationMode === "single" ? "rgba(88,101,242,0.16)" : "var(--background-secondary)", color: "var(--text-normal)", fontWeight: 700, cursor: "pointer" }}>Обычный перенос</button>
+                    style={{ minHeight: "44px", padding: "10px 14px", borderRadius: "8px", border: operationMode === "single" ? "1px solid rgba(130,140,255,0.45)" : "1px solid transparent", background: operationMode === "single" ? "linear-gradient(135deg, rgba(88,101,242,0.28), rgba(88,101,242,0.12))" : "transparent", color: operationMode === "single" ? "var(--header-primary, #fff)" : "var(--text-muted)", fontWeight: 700, cursor: busy ? "not-allowed" : "pointer", transition: "all 0.16s ease" }}>Обычный перенос</button>
                 <button type="button" disabled={busy} onClick={() => setOperationMode("merge")}
-                    style={{ flex: 1, padding: "10px", borderRadius: "7px", border: operationMode === "merge" ? "1px solid var(--brand-experiment)" : "1px solid var(--background-modifier-accent)", background: operationMode === "merge" ? "rgba(88,101,242,0.16)" : "var(--background-secondary)", color: "var(--text-normal)", fontWeight: 700, cursor: "pointer" }}>Объединение серверов</button>
+                    style={{ minHeight: "44px", padding: "10px 14px", borderRadius: "8px", border: operationMode === "merge" ? "1px solid rgba(130,140,255,0.45)" : "1px solid transparent", background: operationMode === "merge" ? "linear-gradient(135deg, rgba(88,101,242,0.28), rgba(88,101,242,0.12))" : "transparent", color: operationMode === "merge" ? "var(--header-primary, #fff)" : "var(--text-muted)", fontWeight: 700, cursor: busy ? "not-allowed" : "pointer", transition: "all 0.16s ease" }}>Объединение серверов</button>
             </div>
             {operationMode === "merge" && (
                 <div style={{ background: "var(--background-secondary)", borderRadius: "9px", padding: "14px", border: "1px solid var(--background-modifier-accent)" }}>
@@ -2782,20 +2790,21 @@ function SettingsPanel() {
             <div style={{
                 display: "grid",
                 gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
-                gap: "12px",
+                gap: "16px",
                 background: "var(--background-secondary, #2b2d31)",
-                borderRadius: "10px",
-                padding: "14px"
+                border: "1px solid var(--background-modifier-accent, #3f4147)",
+                borderRadius: "12px",
+                padding: "18px"
             }}>
                 <div>
                     <label style={{
                         display: "block",
-                        fontSize: "12px",
-                        fontWeight: 700,
+                        fontSize: "11px",
+                        fontWeight: 750,
                         color: "var(--header-secondary, #b5bac1)",
                         textTransform: "uppercase",
-                        letterSpacing: "0.5px",
-                        marginBottom: "6px"
+                        letterSpacing: "0.07em",
+                        marginBottom: "8px"
                     }}>
                         Исходный сервер (Откуда копировать)
                     </label>
@@ -2805,10 +2814,10 @@ function SettingsPanel() {
                         disabled={busy}
                         style={{
                             width: "100%",
-                            padding: "10px 12px",
+                            padding: "12px 13px",
                             background: "var(--input-background, #1e1f22)",
                             border: "1px solid var(--background-modifier-accent, #3f4147)",
-                            borderRadius: "6px",
+                            borderRadius: "9px",
                             color: "var(--text-normal, #dbdee1)",
                             fontSize: "13px",
                             cursor: busy ? "not-allowed" : "pointer"
