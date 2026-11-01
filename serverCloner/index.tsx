@@ -2598,15 +2598,17 @@ function SettingsPanel() {
             gap: "16px",
             color: "var(--text-normal, #dbdee1)",
             fontFamily: "var(--font-primary, sans-serif)",
-            maxWidth: "760px",
-            padding: "8px 0"
+            maxWidth: "900px",
+            padding: "12px 0 20px",
+            margin: "0 auto"
         }}>
             {/* Header Banner */}
             <div style={{
-                background: "linear-gradient(135deg, rgba(88, 101, 242, 0.15) 0%, rgba(35, 165, 90, 0.1) 100%)",
-                border: "1px solid rgba(88, 101, 242, 0.3)",
-                borderRadius: "10px",
-                padding: "16px 18px",
+                background: "linear-gradient(125deg, rgba(88, 101, 242, 0.20) 0%, rgba(88, 101, 242, 0.07) 48%, rgba(35, 165, 90, 0.10) 100%)",
+                border: "1px solid rgba(130, 140, 255, 0.28)",
+                borderRadius: "14px",
+                padding: "20px 22px",
+                boxShadow: "0 8px 28px rgba(0, 0, 0, 0.12)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
@@ -2615,8 +2617,8 @@ function SettingsPanel() {
             }}>
                 <div>
                     <div style={{
-                        fontSize: "18px",
-                        fontWeight: 700,
+                        fontSize: "22px",
+                        fontWeight: 750,
                         color: "var(--header-primary, #ffffff)",
                         display: "flex",
                         alignItems: "center",
@@ -2624,14 +2626,16 @@ function SettingsPanel() {
                     }}>
                         <span>CopyServer Pro</span>
                         <span style={{
-                            fontSize: "11px",
-                            fontWeight: 600,
-                            background: "var(--brand-experiment, #5865f2)",
-                            color: "#fff",
-                            padding: "2px 8px",
-                            borderRadius: "12px",
+                            fontSize: "10px",
+                            fontWeight: 700,
+                            background: "rgba(88, 101, 242, 0.18)",
+                            color: "var(--brand-experiment, #a5b4fc)",
+                            border: "1px solid rgba(130, 140, 255, 0.25)",
+                            padding: "3px 8px",
+                            borderRadius: "6px",
+                            letterSpacing: "0.04em"
                         }}>
-                            STEALTH MODE
+                            SERVER TOOLS
                         </span>
                         <span style={{
                             fontSize: "11px",
@@ -2645,8 +2649,8 @@ function SettingsPanel() {
                             v1.2.0
                         </span>
                     </div>
-                    <div style={{ fontSize: "12px", color: "var(--text-muted, #949ba4)", marginTop: "4px" }}>
-                        Клонирование структуры 1:1 · Дерево категорий · Двухфазная верификация · Защита рейтлимитов
+                    <div style={{ fontSize: "13px", color: "var(--text-muted, #949ba4)", marginTop: "7px", lineHeight: 1.5, maxWidth: "560px" }}>
+                        Перенос структуры Discord, выборочная синхронизация и создание серверов из редактируемых шаблонов.
                     </div>
                 </div>
 
@@ -2654,10 +2658,10 @@ function SettingsPanel() {
                     <button
                         onClick={() => setShowMatrix(!showMatrix)}
                         style={{
-                            padding: "6px 12px",
-                            background: "rgba(255, 255, 255, 0.08)",
-                            border: "1px solid rgba(255, 255, 255, 0.12)",
-                            borderRadius: "6px",
+                            padding: "8px 12px",
+                            background: "rgba(255, 255, 255, 0.07)",
+                            border: "1px solid rgba(255, 255, 255, 0.13)",
+                            borderRadius: "8px",
                             color: "#ffffff",
                             fontSize: "12px",
                             fontWeight: 600,
