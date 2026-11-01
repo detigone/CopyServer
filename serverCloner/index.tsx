@@ -74,6 +74,9 @@ export interface CopyCfg {
     stealthMode: boolean;
     copyHiddenChannels: boolean;
     orphanChannelPolicy: OrphanPolicy;
+    /** null = all objects; [] = none; otherwise only listed source IDs. */
+    selectedRoleIds?: string[] | null;
+    selectedChannelIds?: string[] | null;
 }
 
 export interface AuditItemReview {
@@ -452,6 +455,7 @@ async function copyRoles(
     const rawOthers = roles.filter((r: any) => r.id !== cfg.src);
     let skippedBotRoles = 0;
     const filterable = rawOthers.filter((r: any) => {
+        if (cfg.selectedRoleIds && !cfg.selectedRoleIds.includes(r.id)) return false;
         if (r.managed) {
             log(`Роль «${r.name}» пропущена (интеграционная/бот-роль)`, "info");
             skippedBotRoles++;
@@ -1190,7 +1194,24 @@ async function copyChannelsWithVerification(
     // 1. Фильтрация и явное предупреждение о неподдерживаемых объектах (ветки и store)
     const UNSUPPORTED_TYPES = [6, 10, 11, 12];
     const unsupported = allChannels.filter((c: any) => UNSUPPORTED_TYPES.includes(c.type));
-    const usable = allChannels.filter((c: any) => !UNSUPPORTED_TYPES.includes(c.type));
+    let usable = allChannels.filter((c: any) => !UNSUPPORTED_TYPES.includes(c.type));
+
+    // Selective mode keeps category/channel hierarchy intact: selecting a
+    // category includes its children; selecting a child also includes its parent.
+    if (cfg.selectedChannelIds) {
+        const selected = new Set(cfg.selectedChannelIds);
+        const selectedCategories = new Set<string>();
+        for (const channel of usable) {
+            if (selected.has(channel.id) && channel.type === 4) selectedCategories.add(channel.id);
+            if (selected.has(channel.id) && channel.parent_id) selectedCategories.add(channel.parent_id);
+        }
+        usable = usable.filter((channel: any) =>
+            selected.has(channel.id) ||
+            (channel.parent_id && selectedCategories.has(channel.parent_id)) ||
+            (channel.type === 4 && selectedCategories.has(channel.id))
+        );
+        log(`Выборочный перенос каналов: выбрано ${selected.size} объектов, с учётом категорий и зависимостей — ${usable.length}`, "info");
+    }
 
     if (unsupported.length > 0) {
         const typesSummary = Array.from(new Set(unsupported.map((c: any) => c.type))).join(", ");
@@ -1943,6 +1964,12 @@ function SettingsPanel() {
     const [stealthMode, setStealthMode] = useState(true);
     const [copyHiddenChannels, setCopyHiddenChannels] = useState(true);
     const [orphanChannelPolicy, setOrphanChannelPolicy] = useState<OrphanPolicy>("skip");
+    const [sourceRoles, setSourceRoles] = useState<any[]>([]);
+    const [sourceChannels, setSourceChannels] = useState<any[]>([]);
+    const [selectedRoleIds, setSelectedRoleIds] = useState<string[] | null>(null);
+    const [selectedChannelIds, setSelectedChannelIds] = useState<string[] | null>(null);
+    const [showSelectionPanel, setShowSelectionPanel] = useState(false);
+    const [loadingInventory, setLoadingInventory] = useState(false);
 
     // Модальные окна создания и очистки сервера (3-этапная защита от миссклика)
     const [showCreateGuildModal, setShowCreateGuildModal] = useState(false);
@@ -2021,6 +2048,38 @@ function SettingsPanel() {
         }
     };
 
+    const loadSelectionInventory = async () => {
+        if (!src) return showToast("Сначала выбери исходный сервер", "failure");
+        setLoadingInventory(true);
+        try {
+            const [rolesData, channelsData] = await Promise.all([
+                apiGet(`/guilds/${src}/roles`, log),
+                apiGet(`/guilds/${src}/channels`, log)
+            ]);
+            setSourceRoles((rolesData ?? []).filter((role: any) => role.id !== src && !role.managed && !role.tags?.bot_id && !role.tags?.integration_id));
+            setSourceChannels((channelsData ?? []).filter((channel: any) => ![6, 10, 11, 12].includes(channel.type)));
+            setSelectedRoleIds(null);
+            setSelectedChannelIds(null);
+            setShowSelectionPanel(true);
+            log("Инвентаризация исходного сервера загружена. По умолчанию выбраны все доступные роли и каналы.", "success");
+        } catch (error: any) {
+            log(`Не удалось загрузить список объектов: ${errMsg(error)}`, "error");
+            showToast("Не удалось загрузить объекты исходного сервера", "failure");
+        } finally {
+            setLoadingInventory(false);
+        }
+    };
+
+    const toggleRoleSelection = (id: string) => {
+        const current = selectedRoleIds ?? sourceRoles.map((role: any) => role.id);
+        setSelectedRoleIds(current.includes(id) ? current.filter(value => value !== id) : [...current, id]);
+    };
+
+    const toggleChannelSelection = (id: string) => {
+        const current = selectedChannelIds ?? sourceChannels.map((channel: any) => channel.id);
+        setSelectedChannelIds(current.includes(id) ? current.filter(value => value !== id) : [...current, id]);
+    };
+
     const handleStartClick = () => {
         if (!src || !dst) return showToast("Выбери оба сервера!", "failure");
         if (src === dst) return showToast("Исходный и целевой сервер должны отличаться!", "failure");
@@ -2054,6 +2113,8 @@ function SettingsPanel() {
                 stealthMode,
                 copyHiddenChannels,
                 orphanChannelPolicy,
+                selectedRoleIds,
+                selectedChannelIds,
             },
             log,
             onProgress,
@@ -2401,6 +2462,53 @@ function SettingsPanel() {
                     </div>
                 </div>
             </div>
+
+            <div style={{ display: "flex", gap: "8px" }}>
+                <button type="button" onClick={loadSelectionInventory} disabled={busy || loadingInventory || !src}
+                    style={{ flex: 1, padding: "9px 12px", borderRadius: "7px", border: "1px solid var(--brand-experiment, #5865f2)", background: "rgba(88,101,242,0.12)", color: "var(--brand-experiment, #8ea1ff)", fontWeight: 600, cursor: busy || loadingInventory || !src ? "not-allowed" : "pointer" }}>
+                    {loadingInventory ? "Загрузка объектов..." : "Выбрать конкретные роли и каналы"}
+                </button>
+                {showSelectionPanel && <button type="button" onClick={() => { setSelectedRoleIds(null); setSelectedChannelIds(null); }} disabled={busy}
+                    style={{ padding: "9px 12px", borderRadius: "7px", border: "1px solid var(--background-modifier-accent)", background: "var(--background-secondary)", color: "var(--text-normal)", cursor: "pointer" }}>Выбрать всё</button>}
+            </div>
+
+            {showSelectionPanel && (
+                <div style={{ background: "var(--background-secondary, #2b2d31)", border: "1px solid var(--background-modifier-accent)", borderRadius: "9px", padding: "14px", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "14px" }}>
+                    <div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                            <strong style={{ fontSize: "13px" }}>Роли ({selectedRoleIds === null ? sourceRoles.length : selectedRoleIds.length}/{sourceRoles.length})</strong>
+                            <button type="button" onClick={() => setSelectedRoleIds([])} disabled={busy} style={{ background: "transparent", border: 0, color: "var(--brand-experiment)", cursor: "pointer", fontSize: "11px" }}>Снять все</button>
+                        </div>
+                        <div style={{ maxHeight: "240px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "5px" }}>
+                            {sourceRoles.map((role: any) => (
+                                <label key={role.id} style={{ display: "flex", gap: "8px", alignItems: "center", fontSize: "12px" }}>
+                                    <input type="checkbox" checked={selectedRoleIds === null || selectedRoleIds.includes(role.id)} disabled={busy} onChange={() => toggleRoleSelection(role.id)} />
+                                    <span>{role.name}</span>
+                                </label>
+                            ))}
+                            {!sourceRoles.length && <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>Пользовательских ролей нет</span>}
+                        </div>
+                    </div>
+                    <div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                            <strong style={{ fontSize: "13px" }}>Каналы и категории ({selectedChannelIds === null ? sourceChannels.length : selectedChannelIds.length}/{sourceChannels.length})</strong>
+                            <button type="button" onClick={() => setSelectedChannelIds([])} disabled={busy} style={{ background: "transparent", border: 0, color: "var(--brand-experiment)", cursor: "pointer", fontSize: "11px" }}>Снять все</button>
+                        </div>
+                        <div style={{ maxHeight: "240px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "5px" }}>
+                            {[...sourceChannels].sort((a: any, b: any) => (a.type === 4 ? -1 : b.type === 4 ? 1 : a.position - b.position)).map((channel: any) => (
+                                <label key={channel.id} style={{ display: "flex", gap: "8px", alignItems: "center", fontSize: "12px", paddingLeft: channel.type === 4 ? 0 : 12 }}>
+                                    <input type="checkbox" checked={selectedChannelIds === null || selectedChannelIds.includes(channel.id)} disabled={busy} onChange={() => toggleChannelSelection(channel.id)} />
+                                    <span>{channel.type === 4 ? "▰ " : "# "}{channel.name}</span>
+                                </label>
+                            ))}
+                            {!sourceChannels.length && <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>Каналов нет</span>}
+                        </div>
+                    </div>
+                    <div style={{ gridColumn: "1 / -1", fontSize: "11px", color: "var(--text-muted)" }}>
+                        Выбор категории автоматически включает её дочерние каналы. Выбор отдельного канала автоматически добавляет его родительскую категорию. Роли, используемые в правах выбранных каналов, необходимо также оставить выбранными.
+                    </div>
+                </div>
+            )}
 
             {/* Special Section: Водяной знак, Stealth Mode и Скрытые каналы */}
             <div style={{
