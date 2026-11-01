@@ -74,7 +74,12 @@ export function createStructureDocument(guild, sourceRoles = [], sourceChannels 
                         ...(roleKey === "everyone" ? {} : { role: roleKey }),
                         allow: decimalBits(overwrite.allow) ?? "0",
                         deny: decimalBits(overwrite.deny) ?? "0"
-                    } : null;
+                    } : {
+                        target: "unresolvedRole",
+                        sourceRoleId: String(overwrite.id),
+                        allow: decimalBits(overwrite.allow) ?? "0",
+                        deny: decimalBits(overwrite.deny) ?? "0"
+                    };
                 }
                 if (Number(overwrite.type) === 1) {
                     return {
@@ -202,7 +207,8 @@ export function validateStructureDocument(document) {
         for (const [owIndex, overwrite] of (channel.permissionOverwrites ?? []).entries()) {
             const owLabel = `${label}.permissionOverwrites[${owIndex}]`;
             if (!isObject(overwrite)) { errors.push(`${owLabel} must be an object`); continue; }
-            if (!["everyone", "role", "member"].includes(overwrite.target)) errors.push(`${owLabel}.target must be everyone, role, or member`);
+            if (!["everyone", "role", "member", "unresolvedRole"].includes(overwrite.target)) errors.push(`${owLabel}.target must be everyone, role, member, or unresolvedRole`);
+            if (overwrite.target === "unresolvedRole") warnings.push(`${owLabel} references a managed or unavailable source role and cannot be mapped automatically`);
             if (overwrite.target === "role" && !roleKeys.has(overwrite.role)) errors.push(`${owLabel} references unknown role key "${overwrite.role}"`);
             if (overwrite.target === "member" && !asString(overwrite.memberId).trim()) errors.push(`${owLabel}.memberId is required`);
             if (decimalBits(overwrite.allow) === null || decimalBits(overwrite.deny) === null) errors.push(`${owLabel} allow/deny must be unsigned decimal bitfield strings`);
@@ -237,6 +243,7 @@ export function buildStructureImportPlan(document, targetGuildId) {
         mapOverwrites(overwrites = []) {
             return overwrites.map(overwrite => {
                 if (overwrite.target === "everyone") return { id: String(targetGuildId), type: 0, allow: decimalBits(overwrite.allow), deny: decimalBits(overwrite.deny) };
+                if (overwrite.target === "unresolvedRole") throw new Error(`Source role ${overwrite.sourceRoleId ?? "(unknown)"} is unavailable in this document; permission overwrite cannot be mapped safely`);
                 if (overwrite.target === "role") {
                     const id = roleMap.get(overwrite.role);
                     if (!id) throw new Error(`Role "${overwrite.role}" has not been created; cannot map permission overwrite`);
