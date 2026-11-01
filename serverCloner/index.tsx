@@ -506,12 +506,28 @@ async function copyRoles(
         onProgress?.(`Создание ролей (${idx}/${others.length}): ${r.name}`, Math.round(10 + (idx / others.length) * 20));
 
         if (cfg.skipDuplicates) {
-            const found = existingTargetRoles.find((er: any) => er.name.toLowerCase() === r.name.toLowerCase());
-            if (found) {
+            // Do not accidentally map a source role to a managed integration role.
+            const candidates = existingTargetRoles.filter((er: any) =>
+                !er.managed && er.id !== cfg.dst && er.name.toLowerCase() === r.name.toLowerCase()
+            );
+            if (candidates.length === 1) {
+                const found = candidates[0];
                 roleMap.set(r.id, found.id);
                 matchedCount++;
-                log(`Роль «${r.name}» уже существует на целевом сервере (сопоставлена)`, "info");
+                log(`Роль «${r.name}» уже существует на целевом сервере (сопоставлена; настройки будут проверены)`, "info");
                 continue;
+            }
+            if (candidates.length > 1) {
+                const message = `Роль «${r.name}»: на целевом сервере найдено несколько одноимённых ролей; автоматическое сопоставление пропущено во избежание переноса прав не на ту роль.`;
+                log(message, "warn");
+                warnings.push(message);
+                manualReviews.push({
+                    type: "role",
+                    name: r.name,
+                    id: r.id,
+                    reason: "Найдено несколько одноимённых ролей на целевом сервере",
+                    actionRequired: "Переименовать лишние роли или сопоставить нужную роль вручную; CopyServer создаст отдельную роль-копию"
+                });
             }
         }
 
