@@ -2962,54 +2962,129 @@ function SettingsPanel() {
 
 
             {/* Portable Structure Documents */}
-            <div style={{
-                background: "var(--background-secondary, #2b2d31)",
-                border: "1px solid rgba(88, 101, 242, 0.35)",
-                borderRadius: "10px",
-                padding: "14px",
+            <section style={{
+                position: "relative",
+                overflow: "hidden",
+                background: "linear-gradient(145deg, rgba(88,101,242,0.13), var(--background-secondary, #2b2d31) 48%)",
+                border: "1px solid rgba(130,140,255,0.30)",
+                borderRadius: "14px",
+                padding: "18px",
                 display: "flex",
                 flexDirection: "column",
-                gap: "10px"
+                gap: "16px",
+                boxShadow: "0 8px 24px rgba(0,0,0,0.10)"
             }}>
-                <div>
-                    <div style={{ fontSize: "14px", fontWeight: 700, color: "var(--header-primary, #fff)" }}>Structure Documents · TXT v1</div>
-                    <div style={{ fontSize: "12px", color: "var(--text-muted, #949ba4)", marginTop: "4px" }}>
-                        Экспортируй структуру, отредактируй имена, категории, роли и права в TXT, затем создай новый сервер по документу.
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "14px", flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", gap: "12px", alignItems: "flex-start", minWidth: 0 }}>
+                        <div style={{
+                            width: "42px", height: "42px", flexShrink: 0, borderRadius: "11px",
+                            display: "grid", placeItems: "center", fontSize: "20px",
+                            color: "#c7ceff", background: "rgba(88,101,242,0.20)",
+                            border: "1px solid rgba(130,140,255,0.28)"
+                        }}>▤</div>
+                        <div>
+                            <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+                                <strong style={{ fontSize: "16px", color: "var(--header-primary, #fff)", letterSpacing: "-0.02em" }}>Structure Documents</strong>
+                                <span style={{ fontSize: "10px", fontWeight: 750, color: "#c7ceff", background: "rgba(88,101,242,0.20)", border: "1px solid rgba(130,140,255,0.25)", padding: "3px 7px", borderRadius: "5px", letterSpacing: "0.06em" }}>TXT · V1</span>
+                            </div>
+                            <div style={{ fontSize: "12px", color: "var(--text-muted, #949ba4)", marginTop: "5px", lineHeight: 1.55, maxWidth: "570px" }}>
+                                Создай переносимый шаблон сервера, отредактируй роли, каналы и разрешения в обычном текстовом редакторе, а затем разверни структуру на новом сервере.
+                            </div>
+                        </div>
+                    </div>
+                    <div style={{ fontSize: "11px", color: "var(--text-muted)", background: "var(--background-tertiary, #1e1f22)", border: "1px solid var(--background-modifier-accent)", padding: "6px 9px", borderRadius: "7px" }}>
+                        {structureText.trim() ? "Документ загружен" : "Шаблон не выбран"}
                     </div>
                 </div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "9px" }}>
                     <button type="button" onClick={exportStructureDocument} disabled={busy || !src}
-                        style={{ padding: "9px 12px", borderRadius: "7px", border: "1px solid var(--brand-experiment, #5865f2)", background: "rgba(88,101,242,0.14)", color: "var(--text-normal)", fontWeight: 600, cursor: busy || !src ? "not-allowed" : "pointer" }}>
-                        Скачать структуру текущего сервера (.txt)
+                        style={{
+                            minHeight: "76px", padding: "12px 14px", borderRadius: "10px",
+                            border: "1px solid rgba(130,140,255,0.42)",
+                            background: "linear-gradient(135deg, rgba(88,101,242,0.24), rgba(88,101,242,0.10))",
+                            color: "var(--text-normal)", textAlign: "left", cursor: busy || !src ? "not-allowed" : "pointer",
+                            opacity: busy || !src ? 0.5 : 1, display: "flex", flexDirection: "column", gap: "5px"
+                        }}>
+                        <span style={{ fontSize: "12px", fontWeight: 750 }}>↓ Экспорт структуры</span>
+                        <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 400 }}>Скачать роли, каналы и права текущего сервера</span>
                     </button>
                     <button type="button" onClick={() => structureFileRef.current?.click()} disabled={busy}
-                        style={{ padding: "9px 12px", borderRadius: "7px", border: "1px solid var(--background-modifier-accent)", background: "var(--background-tertiary, #1e1f22)", color: "var(--text-normal)", fontWeight: 600, cursor: busy ? "not-allowed" : "pointer" }}>
-                        Загрузить TXT-документ
+                        style={{
+                            minHeight: "76px", padding: "12px 14px", borderRadius: "10px",
+                            border: "1px solid var(--background-modifier-accent)",
+                            background: "var(--background-tertiary, #1e1f22)",
+                            color: "var(--text-normal)", textAlign: "left", cursor: busy ? "not-allowed" : "pointer",
+                            opacity: busy ? 0.5 : 1, display: "flex", flexDirection: "column", gap: "5px"
+                        }}>
+                        <span style={{ fontSize: "12px", fontWeight: 750 }}>↑ Импорт TXT-документа</span>
+                        <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 400 }}>Загрузить ранее сохранённый шаблон</span>
                     </button>
                     <input ref={structureFileRef} type="file" accept=".txt,text/plain,.json,application/json" onChange={handleStructureFileChange} style={{ display: "none" }} />
                     <button type="button" onClick={validateStructureText} disabled={busy || !structureText.trim()}
-                        style={{ padding: "9px 12px", borderRadius: "7px", border: "1px solid var(--background-modifier-accent)", background: "var(--background-tertiary, #1e1f22)", color: "var(--text-normal)", fontWeight: 600, cursor: busy || !structureText.trim() ? "not-allowed" : "pointer" }}>
-                        Проверить документ
+                        style={{
+                            minHeight: "76px", padding: "12px 14px", borderRadius: "10px",
+                            border: "1px solid var(--background-modifier-accent)",
+                            background: "var(--background-tertiary, #1e1f22)",
+                            color: "var(--text-normal)", textAlign: "left", cursor: busy || !structureText.trim() ? "not-allowed" : "pointer",
+                            opacity: busy || !structureText.trim() ? 0.5 : 1, display: "flex", flexDirection: "column", gap: "5px"
+                        }}>
+                        <span style={{ fontSize: "12px", fontWeight: 750 }}>✓ Проверить документ</span>
+                        <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 400 }}>Проверить формат, связи и разрешения</span>
                     </button>
                     <button type="button" onClick={createServerFromStructureDocument} disabled={busy || !structureValidation?.valid || !structureText.trim()}
-                        style={{ padding: "9px 12px", borderRadius: "7px", border: "none", background: busy || !structureValidation?.valid ? "#4e5058" : "var(--brand-experiment, #5865f2)", color: "#fff", fontWeight: 700, cursor: busy || !structureValidation?.valid ? "not-allowed" : "pointer" }}>
-                        Создать сервер по документу
+                        style={{
+                            minHeight: "76px", padding: "12px 14px", borderRadius: "10px",
+                            border: "1px solid rgba(35,165,90,0.38)",
+                            background: structureValidation?.valid && !busy ? "linear-gradient(135deg, rgba(35,165,90,0.24), rgba(35,165,90,0.10))" : "var(--background-tertiary, #1e1f22)",
+                            color: "var(--text-normal)", textAlign: "left",
+                            cursor: busy || !structureValidation?.valid ? "not-allowed" : "pointer",
+                            opacity: busy || !structureValidation?.valid ? 0.48 : 1,
+                            display: "flex", flexDirection: "column", gap: "5px"
+                        }}>
+                        <span style={{ fontSize: "12px", fontWeight: 750 }}>＋ Создать сервер</span>
+                        <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 400 }}>Развернуть проверенный шаблон</span>
                     </button>
                 </div>
-                {structureFileName && <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>Документ: {structureFileName}</div>}
-                {structureValidation && (
-                    <div style={{ borderRadius: "7px", padding: "9px 11px", background: structureValidation.valid ? "rgba(35,165,90,0.10)" : "rgba(218,55,60,0.10)", border: `1px solid ${structureValidation.valid ? "rgba(35,165,90,0.35)" : "rgba(218,55,60,0.35)"}`, fontSize: "11px" }}>
-                        <strong style={{ color: structureValidation.valid ? "#23a55a" : "#f23f43" }}>
-                            {structureValidation.valid ? "Документ корректен" : "Обнаружены ошибки"}
-                        </strong>
-                        {structureValidation.errors.map((item, index) => <div key={`e-${index}`} style={{ marginTop: "4px" }}>{item}</div>)}
-                        {structureValidation.warnings.map((item, index) => <div key={`w-${index}`} style={{ marginTop: "4px", color: "#f0b232" }}>Предупреждение: {item}</div>)}
+
+                {structureFileName && (
+                    <div style={{ display: "flex", alignItems: "center", gap: "9px", padding: "9px 11px", background: "var(--background-tertiary, #1e1f22)", border: "1px solid var(--background-modifier-accent)", borderRadius: "8px", minWidth: 0 }}>
+                        <span style={{ color: "#a5b4fc", fontSize: "15px" }}>▤</span>
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                            <div style={{ fontSize: "10px", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700 }}>Текущий документ</div>
+                            <div style={{ fontSize: "12px", color: "var(--header-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: "2px" }}>{structureFileName}</div>
+                        </div>
                     </div>
                 )}
-                <div style={{ fontSize: "11px", color: "var(--text-muted, #949ba4)" }}>
-                    Формат TXT v1 — редактируемый JSON. Discord ID заменяются внутренними ключами документа; права ALLOW/DENY сохраняются отдельно. Значки ролей и неподдерживаемые Discord-объекты не встраиваются в v1.
+
+                {structureValidation && (
+                    <div style={{
+                        borderRadius: "10px", padding: "12px 14px",
+                        background: structureValidation.valid ? "rgba(35,165,90,0.09)" : "rgba(218,55,60,0.09)",
+                        border: `1px solid ${structureValidation.valid ? "rgba(35,165,90,0.32)" : "rgba(218,55,60,0.32)"}`,
+                        fontSize: "12px", lineHeight: 1.5
+                    }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: structureValidation.errors.length || structureValidation.warnings.length ? "8px" : 0 }}>
+                            <span style={{ fontSize: "15px", color: structureValidation.valid ? "#23a55a" : "#f23f43" }}>{structureValidation.valid ? "✓" : "!"}</span>
+                            <strong style={{ color: structureValidation.valid ? "#23a55a" : "#f23f43", flex: 1 }}>
+                                {structureValidation.valid ? "Документ прошёл проверку" : "Найдены проблемы"}
+                            </strong>
+                            <span style={{ color: "var(--text-muted)", fontSize: "11px" }}>
+                                {structureValidation.errors.length} ошибок · {structureValidation.warnings.length} предупреждений
+                            </span>
+                        </div>
+                        {structureValidation.errors.map((item, index) => <div key={`e-${index}`} style={{ marginTop: "5px", color: "#f28b82" }}>• {item}</div>)}
+                        {structureValidation.warnings.map((item, index) => <div key={`w-${index}`} style={{ marginTop: "5px", color: "#e5b95c" }}>• {item}</div>)}
+                    </div>
+                )}
+
+                <div style={{ display: "flex", alignItems: "flex-start", gap: "8px", paddingTop: "2px" }}>
+                    <span style={{ color: "var(--text-muted)", fontSize: "13px" }}>ⓘ</span>
+                    <div style={{ fontSize: "11px", color: "var(--text-muted, #949ba4)", lineHeight: 1.55 }}>
+                        TXT v1 — редактируемый JSON. Внутренние ключи заменяют Discord ID, а ALLOW и DENY хранятся отдельно. Значки ролей и некоторые Discord-объекты не входят в формат.
+                    </div>
                 </div>
-            </div>
+            </section>
 
             {/* Special Section: Водяной знак, Stealth Mode и Скрытые каналы */}
             <div style={{
