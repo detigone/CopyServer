@@ -1928,6 +1928,10 @@ async function importStructureIntoGuild(
     const supportsEnhancedColors = features.has("ENHANCED_ROLE_COLORS");
     const supportsCommunity = features.has("COMMUNITY");
 
+    if (document.guild.description) {
+        await apiPatch(`/guilds/${targetGuildId}`, { description: document.guild.description }, log);
+    }
+
     onProgress?.("Применение разрешений @everyone...", 5);
     await apiPatch(`/guilds/${targetGuildId}/roles/${targetGuildId}`, {
         permissions: plan.everyonePermissions
@@ -2004,13 +2008,17 @@ async function importStructureIntoGuild(
             if (!parentId) throw new Error(`Для канала «${channel.name}» не найдена созданная родительская категория`);
             body.parent_id = parentId;
         }
-        const channelFields = [
-            "topic", "nsfw", "bitrate", "user_limit", "rate_limit_per_user", "rtc_region",
-            "video_quality_mode", "default_auto_archive_duration", "default_thread_rate_limit_per_user",
-            "default_sort_order", "default_forum_layout", "available_tags", "default_reaction_emoji"
-        ];
-        for (const field of channelFields) {
-            if (channel[field] !== undefined && channel[field] !== null && type === Number(channel.type)) body[field] = channel[field];
+        const commonFields = ["topic", "nsfw", "rate_limit_per_user"];
+        for (const field of commonFields) if (channel[field] !== undefined && channel[field] !== null) body[field] = channel[field];
+        if (type === 2 || type === 13) {
+            for (const field of ["bitrate", "user_limit", "rtc_region", "video_quality_mode"]) {
+                if (channel[field] !== undefined && channel[field] !== null) body[field] = channel[field];
+            }
+        }
+        if (type === 15 || type === 16) {
+            for (const field of ["default_auto_archive_duration", "default_thread_rate_limit_per_user", "default_sort_order", "default_forum_layout", "available_tags", "default_reaction_emoji"]) {
+                if (channel[field] !== undefined && channel[field] !== null) body[field] = channel[field];
+            }
         }
         const created = await apiPost(`/guilds/${targetGuildId}/channels`, body, log);
         if (!created?.id) throw new Error(`Discord не вернул ID для канала «${channel.name}»`);
@@ -2473,10 +2481,9 @@ function SettingsPanel() {
         let document: any;
         try {
             document = parseStructureDocument(structureText).document;
-            const preflightPlan = buildStructureImportPlan(document, "preflight");
-            for (const channel of [...preflightPlan.categories, ...preflightPlan.channels]) {
-                preflightPlan.mapOverwrites(channel.permissionOverwrites ?? []);
-            }
+            const unresolvedOverwrite = document.channels.flatMap((channel: any) => channel.permissionOverwrites ?? [])
+                .find((overwrite: any) => overwrite.target === "unresolvedRole");
+            if (unresolvedOverwrite) throw new Error(`Permission overwrite references an unavailable source role: ${unresolvedOverwrite.sourceRoleId}`);
         } catch (error: any) {
             setStructureValidation({ valid: false, errors: [errMsg(error)], warnings: [] });
             return showToast("Сначала загрузи и проверь корректный TXT-документ", "failure");
