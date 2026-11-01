@@ -141,6 +141,8 @@ CopyServer can export a server's roles, channels, categories and permission over
 
 ### Document format
 
+An editable starter file is available at [examples/CopyServer_Structure_v1.example.txt](examples/CopyServer_Structure_v1.example.txt).
+
 The `.txt` file contains UTF-8 JSON. JSON was chosen deliberately: it is readable, editable by hand, has strict syntax, and can be validated before any Discord API request. The extension remains `.txt` for convenient handling as a text document.
 
 Top-level fields:
