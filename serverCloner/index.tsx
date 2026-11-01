@@ -481,25 +481,30 @@ async function copyRoles(
         existingTargetRoles = (await apiGet(`/guilds/${cfg.dst}/roles`, log)) || [];
     }
 
-    // Синхронизация базовых прав роли @everyone
+    // @everyone is shared by the destination guild. During a merge it is
+    // intentionally sourced from the first donor only, never reset by later donors.
     roleMap.set(cfg.src, cfg.dst);
-    try {
-        await apiPatch(`/guilds/${cfg.dst}/roles/${cfg.dst}`, {
-            permissions: everyone?.permissions ?? "0"
-        }, log);
-        log("Роль @everyone: базовые разрешения синхронизированы", "success");
-    } catch (err) {
-        const m = `Не удалось синхронизировать роль @everyone: ${errMsg(err)}`;
-        log(m, "warn");
-        warnings.push(m);
-        manualReviews.push({
-            type: "role",
-            name: "@everyone",
-            reason: "Ошибка синхронизации прав",
-            actionRequired: "Вручную проверить базовые права @everyone на целевом сервере"
-        });
+    if (everyone) {
+        try {
+            await apiPatch(`/guilds/${cfg.dst}/roles/${cfg.dst}`, {
+                permissions: everyone.permissions ?? "0"
+            }, log);
+            log("Роль @everyone: базовые разрешения синхронизированы", "success");
+        } catch (err) {
+            const m = `Не удалось синхронизировать роль @everyone: ${errMsg(err)}`;
+            log(m, "warn");
+            warnings.push(m);
+            manualReviews.push({
+                type: "role",
+                name: "@everyone",
+                reason: "Ошибка синхронизации прав",
+                actionRequired: "Вручную проверить базовые права @everyone на целевом сервере"
+            });
+        }
+        await sleep(cfg.stealthMode ? 800 : 400);
+    } else {
+        log("Роль @everyone оставлена без изменений: права уже заданы первым источником объединения", "info");
     }
-    await sleep(cfg.stealthMode ? 800 : 400);
 
     let createdCount = 0;
     let matchedCount = 0;
