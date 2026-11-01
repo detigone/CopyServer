@@ -28,8 +28,7 @@ function Test-VencordSource([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
     return (
         (Test-Path -LiteralPath (Join-Path $Path "package.json")) -and
-        (Test-Path -LiteralPath (Join-Path $Path "scripts\build\build.mjs")) -and
-        (Test-Path -LiteralPath (Join-Path $Path "src\userplugins"))
+        (Test-Path -LiteralPath (Join-Path $Path "scripts\build\build.mjs"))
     )
 }
 
@@ -173,6 +172,8 @@ function Restore-Backup([string]$TargetDirectory) {
 }
 
 try {
+    $InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
+
     if ($Rollback) {
         Write-Step 1 2 "Восстанавливаю предыдущую версию Vencord..."
         Restore-Backup $InstallDir
