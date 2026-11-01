@@ -62,7 +62,8 @@
 ```text
 ├── CopyServer.plugin.js        # Готовый плагин для BetterDiscord
 ├── serverCloner/
-│   └── index.tsx               # Исходный код плагина для Vencord (React + TypeScript)
+│   ├── index.tsx               # Основной исходный код плагина Vencord
+│   └── structureDocument.mjs   # Модуль экспорта и импорта Structure Document
 ├── src/
 │   ├── components/
 │   │   ├── DiscordPluginSimulator.tsx  # Интерактивный веб-симулятор клонирования
@@ -96,9 +97,7 @@
 2. Установите Git, Node.js и pnpm.
 3. Скачайте репозиторий CopyServer и дважды откройте **`CopyServer.cmd`**.
 4. Если исходники Vencord не найдены, CopyServer автоматически клонирует официальный репозиторий в `%LOCALAPPDATA%\CopyServer\VencordSource` и установит зависимости при первом запуске.
-5. После сборки откройте **Настройки Vencord** → **Плагины** и включите **ServerCloner / CopyServer**.
-
-Требования: Windows, PowerShell, Git, Node.js и pnpm. Пользовательские плагины Vencord требуют сборки из исходников; сам Vencord Installer устанавливает и обновляет клиент, но не добавляет произвольные сторонние плагины.
+\nТребования: Windows, PowerShell, Git, Node.js и pnpm. Пользовательские плагины Vencord требуют сборки из исходников; сам Vencord Installer устанавливает и обновляет клиент, но не добавляет произвольные сторонние плагины.
 Для ручного запуска доступны `build-and-inject.ps1 -Dev`, `-NoLaunch` и `-Rollback`.
 
 ---
