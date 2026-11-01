@@ -148,7 +148,7 @@ The `.txt` file contains UTF-8 JSON. JSON was chosen deliberately: it is readabl
 Top-level fields:
 - `format`: must be `copyserver-structure`.
 - `version`: document schema version; currently `1`.
-- `guild`: default name and description for the new server.
+- `guild`: default name and description for the new server (description is applied only when the target server supports the Community feature).
 - `roles`: role keys, names, positions, decimal permission bitfields, colors, hoist and mentionable flags.
 - `channels`: stable channel keys, type, name, position, category key, channel settings and permission overwrites.
 - `exportNotes`: information about source objects that need attention.
