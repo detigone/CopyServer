@@ -112,7 +112,7 @@ function Resolve-VencordSource([string]$RequestedPath) {
         if (-not (Get-Command "pnpm" -ErrorAction SilentlyContinue)) {
             throw "pnpm не найден в PATH. Установи pnpm и повтори запуск."
         }
-        if (-not (Test-Path -LiteralPath (Join-Path $selectedSource "node_modules") -PathType Container)) {
+        if (-not (Test-Path -LiteralPath (Join-Path $selectedSource "node_modules\.modules.yaml") -PathType Leaf)) {
             Write-Host "Устанавливаю зависимости Vencord (первый запуск может занять несколько минут)..." -ForegroundColor Cyan
             Push-Location $selectedSource
             try {
