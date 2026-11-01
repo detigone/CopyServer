@@ -36,7 +36,7 @@ function Resolve-VencordSource([string]$RequestedPath) {
     if (-not [string]::IsNullOrWhiteSpace($RequestedPath)) {
         $resolved = [System.IO.Path]::GetFullPath($RequestedPath)
         if (-not (Test-VencordSource $resolved)) {
-            throw "Каталог '$resolved' не похож на исходники Vencord. Проверь package.json, scripts\build\build.mjs и src\userplugins."
+            throw "Каталог '$resolved' не похож на исходники Vencord. Проверь package.json и scripts\build\build.mjs."
         }
         return $resolved
     }
