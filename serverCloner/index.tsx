@@ -2186,6 +2186,7 @@ function SettingsPanel() {
         if (operationMode === "merge") {
             if (mergeSourceIds.length < 2) return showToast("Для объединения выбери минимум два исходных сервера", "failure");
             if (!dst) return showToast("Выбери или создай сервер назначения", "failure");
+            if (!extraGuilds.some((guild: any) => guild.id === dst)) return showToast("Для объединения сначала создай новый целевой сервер через кнопку «Создать сервер»", "failure");
             if (mergeSourceIds.includes(dst)) return showToast("Целевой сервер не может быть одним из исходных", "failure");
             if (!roles && !channels && !emojis) return showToast("Выбери хотя бы роли, каналы или эмодзи", "failure");
             setShowConfirm(true);
