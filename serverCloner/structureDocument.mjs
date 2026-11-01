@@ -215,7 +215,8 @@ export function validateStructureDocument(document) {
         if (channel.permissionOverwrites !== undefined && !Array.isArray(channel.permissionOverwrites)) {
             errors.push(`${label}.permissionOverwrites must be an array`);
         }
-        for (const [owIndex, overwrite] of (channel.permissionOverwrites ?? []).entries()) {
+        const overwrites = Array.isArray(channel.permissionOverwrites) ? channel.permissionOverwrites : [];
+        for (const [owIndex, overwrite] of overwrites.entries()) {
             const owLabel = `${label}.permissionOverwrites[${owIndex}]`;
             if (!isObject(overwrite)) { errors.push(`${owLabel} must be an object`); continue; }
             if (!["everyone", "role", "member", "unresolvedRole"].includes(overwrite.target)) errors.push(`${owLabel}.target must be everyone, role, member, or unresolvedRole`);
@@ -234,7 +235,7 @@ export function validateStructureDocument(document) {
         if (channel?.parent && !channelKeys.has(channel.parent)) errors.push(`Channel "${channel.name}" references unknown parent "${channel.parent}"`);
         else if (channel?.parent && !categoryKeys.has(channel.parent)) errors.push(`Channel "${channel.name}" parent must reference a category`);
     }
-    if (!document.channels.some(channel => Number(channel.type) === 4)) warnings.push("Document contains no categories");
+    if (!document.channels.some(channel => Number(channel?.type) === 4)) warnings.push("Document contains no categories");
     if (document.exportNotes?.unsupportedChannels?.length) warnings.push(`${document.exportNotes.unsupportedChannels.length} unsupported source channel(s) were omitted during export`);
     if (document.exportNotes?.managedRolesRecreatedAsOrdinary) warnings.push(`${document.exportNotes.managedRolesRecreatedAsOrdinary} managed integration role(s) will be recreated as ordinary roles`);
     for (const role of document.roles) if (role?.managedSource) warnings.push(`Role "${role.name}" originated from an integration and will be recreated as an ordinary role`);
