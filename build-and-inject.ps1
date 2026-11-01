@@ -1,4 +1,4 @@
-# CopyServer — безопасная сборка и установка пользовательского плагина Vencord
+﻿# CopyServer — безопасная сборка и установка пользовательского плагина Vencord
 # Запуск: .\build-and-inject.ps1
 # Dev-сборка: .\build-and-inject.ps1 -Dev
 # Откат последней установки: .\build-and-inject.ps1 -Rollback
