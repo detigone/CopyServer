@@ -2,14 +2,15 @@
   "name": "copyserver",
   "private": true,
   "version": "1.2.0",
-  "description": "CopyServer Pro — Discord Server Cloner by Lime Systems (Founder: detigone)",
-  "author": "detigone <Lime Systems>",
+  "description": "CopyServer — authorized Discord server structure migration tools by Lime Systems",
+  "author": "detigone",
   "type": "module",
   "scripts": {
     "dev": "vite --port 3000 --host 0.0.0.0",
     "build": "vite build",
     "lint": "tsc --noEmit",
-    "test": "node --test tests/cloner.test.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "test:core": "node --test tests/core/*.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

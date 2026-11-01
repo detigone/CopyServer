@@ -1,142 +1,61 @@
-# CopyServer Pro — Discord Server Cloner
+# CopyServer — Discord Server Structure Manager
 
 <p align="center">
-  <strong>Разработка компании Lime Systems</strong><br>
-  <em>Основатель: detigone</em>
+  <strong>Developed by Lime Systems</strong><br />
+  <em>Founder: detigone</em>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v1.2.0-5865f2?style=for-the-badge&logo=discord&logoColor=white" alt="Release v1.2.0" />
-  <img src="https://img.shields.io/badge/Company-Lime%20Systems-23a55a?style=for-the-badge" alt="Lime Systems" />
-  <img src="https://img.shields.io/badge/Founder-detigone-f0b232?style=for-the-badge" alt="Founder: detigone" />
-  <img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="License: MIT" />
+  <img src="https://img.shields.io/badge/Status-Refactor%20in%20progress-f0b232?style=for-the-badge" alt="Refactor in progress" />
+  <img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="MIT License" />
 </p>
 
----
+CopyServer is a client-side Discord community structure management project with Vencord and BetterDiscord plugin implementations and a web-based simulator.
 
-## 📖 О проекте
+The project focuses on **authorized, transparent migration of server configuration**. It must only operate on source information and destination resources the current Discord account is permitted to access and manage. It does not bypass Discord permissions or reveal inaccessible/private content.
 
-**CopyServer Pro** — профессиональный инструмент и плагин для клонирования Discord-серверов 1:1 с поддержкой клиентов **Vencord** и **BetterDiscord**, а также интерактивным веб-симулятором.
+## Project components
 
-Разработан компанией **Lime Systems** под руководством основателя **detigone** для безопасного переноса, бэкапа и репликации архитектуры Discord-сообществ.
+- **Vencord plugin** — `serverCloner/index.tsx`
+- **BetterDiscord plugin** — generated distributable in the repository root
+- **Web simulator** — React + TypeScript application in `src/`
+- **Tests** — Node.js built-in test runner in `tests/`
 
----
+## Current refactor
 
-## ✨ Ключевые возможности
+The `refactor/copyserver-2-core-audit` branch begins a reliability and maintainability pass. Existing implementations are preserved while the project moves toward:
 
-- 🛡️ **Создание и очистка серверов прямо из интерфейса:**
-  - Кнопка **«Создать сервер»** — создаёт новый пустой сервер в Discord и моментально выбирает его целевым.
-  - Кнопка **«Очистить сервер»** — безопасное и полное удаление каналов, кастомных ролей и эмодзи на целевом сервере для идеального чистого клонирования.
-- 🎭 **Синхронизация ролей и прав:**
-  - Сохранение полной иерархии позиций ролей.
-  - Точный перенос прав `@everyone` и пользовательских ролей.
-  - Поддержка расширенных цветов градиента и голографии (`primary_color`, `secondary_color`, `tertiary_color`) с валидацией ответа Discord API.
-- 📁 **Дерево каналов и категорий:**
-  - Двухфазное построение структуры с контролем связей `parent_id`.
-  - **Скрытые и приватные каналы:** 100% перенос запретов `VIEW_CHANNEL (1024)` роли `@everyone` и прав доверенных групп.
-  - **Graceful Fallback:** Если целевой сервер не является сервером сообщества (Community), каналы объявлений (`GUILD_ANNOUNCEMENT`, тип `5`), трибуны и форумы автоматически адаптируются в стандартные текстовые каналы с сохранением прав, темы и категории.
-  - **Orphan Policy:** Настраиваемое поведение для каналов, чья категория была исключена (`root` — перенос в корень, `skip` — пропуск).
-- 🔒 **Безопасность аккаунта (Stealth Mode):**
-  - Рандомизированные задержки (джиттер 900–1500 мс) и микропаузы.
-  - Маскирование Discord-токенов в логах (`[TOKEN_PROTECTED]`).
-  - Адаптивный экспоненциальный backoff при получении заголовка `429 Too Many Requests (retry_after)`.
-- 📝 **Водяной знак с валидацией лимита topic:**
-  - Опциональная отметка в описании каналов без молчаливой обрезки оригинального текста при превышении 1024 символов.
-- 📊 **Детальный аудит и верификация:**
-  - Двухфазная сверка созданных объектов с API целевого сервера.
-  - Отдельный список ручной проверки (`manualReviewList`).
+1. A shared, platform-independent core for validation, migration planning, ID mapping and audit results.
+2. Thin Vencord and BetterDiscord adapters.
+3. A single source of truth for types, channel capabilities and permission mapping.
+4. Tests that import production logic rather than reimplementing it.
+5. Explicit dry-run previews, destination checks and destructive-action safeguards.
+6. Accurate documentation and reproducible builds.
 
----
+## Safety and permission model
 
-## 📁 Структура репозитория
+- Source data must be obtained through supported client APIs and normal account permissions.
+- A hidden channel is only eligible when the current account can read its metadata and the destination operator is authorized to recreate its access policy.
+- The plugin must never try to evade role/channel access restrictions, extract credentials, or use stealth/evasion mechanisms.
+- Never log authentication tokens, authorization headers, cookies or other secrets.
+- Destructive destination operations require a clearly identified target, a preview, and explicit confirmation. A dry run must be the default.
+- Permission failures are surfaced as failures; they must not be disguised by silently removing access controls or creating broader access than requested.
 
-```text
-├── CopyServer.plugin.js        # Готовый плагин для BetterDiscord
-├── serverCloner/
-│   └── index.tsx               # Исходный код плагина для Vencord (React + TypeScript)
-├── src/
-│   ├── components/
-│   │   ├── DiscordPluginSimulator.tsx  # Интерактивный веб-симулятор клонирования
-│   │   ├── CodeViewer.tsx              # Просмотр и экспорт исходников
-│   │   ├── FeaturesBreakdown.tsx       # Каталог архитектурных решений
-│   │   └── InstallGuide.tsx            # Инструкция по установке
-│   ├── data/                   # Моковые гильдии и сырые исходники
-│   ├── App.tsx                 # Главный компонент интерфейса
-│   └── main.tsx                # Точка входа React
-├── tests/
-│   └── cloner.test.mjs         # 19 модульных тестов логики клонирования
-├── package.json                # Спецификация пакета и скрипты
-├── tsconfig.json               # Конфигурация TypeScript
-├── vite.config.ts              # Конфигурация сборщика Vite
-├── LICENSE                     # Лицензия MIT (Lime Systems, detigone)
-└── README.md                   # Документация репозитория
-```
+## Development
 
----
-
-## 🚀 Установка плагинов
-
-### 1. BetterDiscord
-1. Скопируйте файл `CopyServer.plugin.js`.
-2. Откройте Discord: **Настройки пользователя** → **BetterDiscord** → **Плагины** → **Открыть папку плагинов**.
-3. Вставьте файл `CopyServer.plugin.js` в открывшуюся папку.
-4. Включите переключатель **CopyServer** в списке плагинов.
-
-### 2. Vencord
-1. Поместите директорию `serverCloner/` в папку пользовательских плагинов Vencord:
-   - `src/userplugins/serverCloner`
-2. Пересоберите Vencord или используйте Vencord Companion.
-3. Откройте **Настройки Vencord** → **Плагины** → активируйте **CopyServer**.
-
----
-
-## 💻 Локальный запуск симулятора
-
-Для запуска веб-интерфейса и симулятора:
+Requirements: Node.js compatible with the project's Vite toolchain.
 
 ```bash
-# Установка зависимостей
 npm install
-
-# Запуск в режиме разработки
-npm run dev
-
-# Проверка типов TypeScript
 npm run lint
-
-# Запуск модульных тестов
 npm test
-
-# Сборка проекта
 npm run build
 ```
 
----
+## Known project status
 
-## 🧪 Тестирование
+The historical README and package metadata previously advertised different versions. During this refactor, version numbers should only be changed as part of a tested release. The plugin files and the Vencord implementation must be validated independently against their host environments.
 
-Проект содержит 19 unit-тестов, проверяющих:
-- Валидацию длины водяного знака и защиту от обрезки;
-- Исключение неподдерживаемых веток (`types 10, 11, 12, 6`);
-- Обработку orphan-политик (`skip` и `root`);
-- Верификацию `parent_id` после создания каналов;
-- Маскирование токенов в логах;
-- Стили ролей (`primary_color`, `secondary_color`, `tertiary_color`);
-- Создание пустого сервера и фильтрацию системных ролей при очистке;
-- Сохранение прав скрытых каналов (`VIEW_CHANNEL deny`);
-- Адаптацию каналов объявлений в обычные текстовые для серверов без функции Сообщества.
+## License
 
-Запуск тестов:
-```bash
-node --test tests/cloner.test.mjs
-```
-
----
-
-## 🏢 Компания и авторство
-
-- **Компания:** Lime Systems
-- **Основатель:** detigone
-- **Лицензия:** [MIT License](LICENSE)
-
-*Создано для сообщества с заботой о сохранности данных и стабильности Discord-серверов.*
+MIT. See [LICENSE](LICENSE).
