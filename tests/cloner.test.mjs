@@ -40,16 +40,23 @@ export function processTopicWatermark(ch, cfg, logCallback, reviewCollector) {
 }
 
 // Helper: Check hidden channel
-export function isChannelHidden(ch, srcGuildId) {
-    if (!ch.permission_overwrites) return false;
-    const everyoneOW = ch.permission_overwrites.find((ow) => ow.id === srcGuildId && ow.type === 0);
-    if (!everyoneOW) return false;
-    try {
-        const denyBig = BigInt(everyoneOW.deny || "0");
-        return (denyBig & 1024n) === 1024n;
-    } catch {
-        return false;
+export function isChannelHidden(ch, srcGuildId, categoryMap) {
+    const hasEveryoneViewDeny = (overwrites) => {
+        const everyoneOW = overwrites?.find((ow) => ow.id === srcGuildId && ow.type === 0);
+        if (!everyoneOW) return false;
+        try {
+            return (BigInt(everyoneOW.deny || "0") & 1024n) === 1024n;
+        } catch {
+            return false;
+        }
+    };
+
+    if (Array.isArray(ch.permission_overwrites) && ch.permission_overwrites.length > 0) {
+        return hasEveryoneViewDeny(ch.permission_overwrites);
     }
+
+    const parentCategory = ch.parent_id ? categoryMap?.get(ch.parent_id) : undefined;
+    return hasEveryoneViewDeny(parentCategory?.permission_overwrites);
 }
 
 // Helper: Channel tree and orphan planner
@@ -72,7 +79,7 @@ export function buildChannelPlan(channels, cfg, logCallback, reviewCollector) {
     const activeCategories = [];
 
     for (const cat of categories) {
-        const isHidden = isChannelHidden(cat, cfg.src);
+        const isHidden = isChannelHidden(cat, cfg.src, categoryMap);
         if (cfg.copyHiddenChannels === false && isHidden) {
             excludedCategories.add(cat.id);
             logCallback?.(`[Фильтрация] Скрытая категория «${cat.name}» исключена пользователем`, 'warn');
@@ -86,7 +93,7 @@ export function buildChannelPlan(channels, cfg, logCallback, reviewCollector) {
     const orphanedToRoot = [];
 
     for (const ch of nonCats) {
-        const isHidden = isChannelHidden(ch, cfg.src);
+        const isHidden = isChannelHidden(ch, cfg.src, categoryMap);
         if (cfg.copyHiddenChannels === false && isHidden) {
             skippedChannels.push({ channel: ch, reason: 'Скрытый канал отключен' });
             continue;
@@ -318,6 +325,32 @@ test('Requirement 9: Discord threads (types 10, 11, 12) and store (type 6) are s
     assert.ok(warnings.some(w => w.includes('Пропуск неподдерживаемых объектов')));
 });
 
+test('Requirement 8: Inherited category visibility is detected for channels without local overwrites', () => {
+    const category = {
+        id: 'private-category',
+        type: 4,
+        permission_overwrites: [{ id: 'guild1', type: 0, allow: '0', deny: '1024' }]
+    };
+    const inheritedChannel = {
+        id: 'inherited-private-channel',
+        type: 0,
+        parent_id: 'private-category',
+        permission_overwrites: []
+    };
+    const categories = new Map([[category.id, category]]);
+
+    assert.equal(isChannelHidden(inheritedChannel, 'guild1', categories), true);
+
+    const plan = buildChannelPlan(
+        [category, inheritedChannel],
+        { src: 'guild1', copyHiddenChannels: false, orphanChannelPolicy: 'root' }
+    );
+    assert.equal(plan.activeCategories.length, 0);
+    assert.equal(plan.plannedChannels.length, 0);
+    assert.equal(plan.skippedChannels.length, 1);
+    assert.equal(plan.skippedChannels[0].channel.id, inheritedChannel.id);
+});
+
 test('Requirement 8: Category tree — orphan policy "skip" skips children of excluded category', () => {
     const channels = [
         {
@@ -372,7 +405,8 @@ test('Requirement 8: Category tree — orphan policy "root" preserves child chan
             name: 'сиротский-чат',
             type: 0,
             parent_id: 'cat-hidden',
-            permission_overwrites: []
+            // Explicit public overwrite means this channel is not synced to the private category.
+            permission_overwrites: [{ id: 'guild1', type: 0, allow: '1024', deny: '0' }]
         }
     ];
 
