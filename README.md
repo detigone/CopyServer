@@ -97,7 +97,10 @@
 2. Установите Git, Node.js и pnpm.
 3. Скачайте репозиторий CopyServer и дважды откройте **`CopyServer.cmd`**.
 4. Если исходники Vencord не найдены, CopyServer автоматически клонирует официальный репозиторий в `%LOCALAPPDATA%\CopyServer\VencordSource` и установит зависимости при первом запуске.
-\nТребования: Windows, PowerShell, Git, Node.js и pnpm. Пользовательские плагины Vencord требуют сборки из исходников; сам Vencord Installer устанавливает и обновляет клиент, но не добавляет произвольные сторонние плагины.
+5. Установщик переносит весь каталог `serverCloner`, включая `structureDocument.mjs`, а не только `index.tsx`.
+6. После сборки откройте **Настройки Vencord** → **Плагины** и включите **ServerCloner / CopyServer**.
+
+Требования: Windows, PowerShell, Git, Node.js и pnpm. Пользовательские плагины Vencord требуют сборки из исходников; сам Vencord Installer устанавливает и обновляет клиент, но не добавляет произвольные сторонние плагины.
 Для ручного запуска доступны `build-and-inject.ps1 -Dev`, `-NoLaunch` и `-Rollback`.
 
 ---
