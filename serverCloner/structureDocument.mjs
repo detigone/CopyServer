@@ -28,9 +28,9 @@ function pick(source, keys) {
 }
 
 export function createStructureDocument(guild, sourceRoles = [], sourceChannels = []) {
-    const roles = sourceRoles.filter(role =>
-        role.id === guild.id || (!role.managed && !role.tags?.bot_id && !role.tags?.integration_id)
-    );
+    // Managed integration roles are exported too. On import they become ordinary roles,
+    // allowing channel permission overwrites to retain their references.
+    const roles = sourceRoles;
     const roleKeyByDiscordId = new Map([[String(guild.id), "everyone"]]);
     let roleIndex = 0;
     for (const role of roles) {
@@ -50,6 +50,7 @@ export function createStructureDocument(guild, sourceRoles = [], sourceChannels 
             colors: pick(role.colors, ["primary_color", "secondary_color", "tertiary_color"]),
             hoist: !!role.hoist,
             mentionable: !!role.mentionable,
+            ...(role.managed ? { managedSource: true } : {}),
             ...(role.unicode_emoji ? { unicodeEmoji: role.unicode_emoji } : {})
         };
     }).sort((a, b) => a.position - b.position);
@@ -137,7 +138,7 @@ export function createStructureDocument(guild, sourceRoles = [], sourceChannels 
         channels: channelDocs,
         exportNotes: {
             unsupportedChannels: unsupported,
-            omittedManagedRoles: sourceRoles.filter(role => role.id !== guild.id && (role.managed || role.tags?.bot_id || role.tags?.integration_id)).length,
+            managedRolesRecreatedAsOrdinary: sourceRoles.filter(role => role.id !== guild.id && (role.managed || role.tags?.bot_id || role.tags?.integration_id)).length,
             roleIconsNotIncluded: sourceRoles.some(role => role.icon)
         }
     };
@@ -220,6 +221,8 @@ export function validateStructureDocument(document) {
     }
     if (!document.channels.some(channel => Number(channel.type) === 4)) warnings.push("Document contains no categories");
     if (document.exportNotes?.unsupportedChannels?.length) warnings.push(`${document.exportNotes.unsupportedChannels.length} unsupported source channel(s) were omitted during export`);
+    if (document.exportNotes?.managedRolesRecreatedAsOrdinary) warnings.push(`${document.exportNotes.managedRolesRecreatedAsOrdinary} managed integration role(s) will be recreated as ordinary roles`);
+    for (const role of document.roles) if (role?.managedSource) warnings.push(`Role "${role.name}" originated from an integration and will be recreated as an ordinary role`);
     if (document.exportNotes?.roleIconsNotIncluded) warnings.push("Role icon images are not embedded in Structure Document v1");
     return { valid: errors.length === 0, errors, warnings };
 }
