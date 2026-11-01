@@ -2535,7 +2535,7 @@ function SettingsPanel() {
                     </label>
                     <select
                         value={dst}
-                        onChange={e => setDst(e.target.value)}
+                        onChange={e => { const nextDst = e.target.value; setDst(nextDst); if (operationMode === "merge") setMergeSourceIds(currentIds => currentIds.filter(id => id !== nextDst)); }}
                         disabled={busy || isPurging}
                         style={{
                             width: "100%",
@@ -2580,7 +2580,7 @@ function SettingsPanel() {
                         <button
                             type="button"
                             onClick={handleOpenPurge}
-                            disabled={busy || isPurging || !dst || dst === src}
+                            disabled={busy || isPurging || !dst || dst === src || (operationMode === "merge" && mergeSourceIds.includes(dst))}
                             style={{
                                 flex: 1,
                                 padding: "7px 10px",
