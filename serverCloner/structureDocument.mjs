@@ -173,10 +173,16 @@ export function validateStructureDocument(document) {
     if (document.format !== STRUCTURE_FORMAT) errors.push(`format must be "${STRUCTURE_FORMAT}"`);
     if (document.version !== STRUCTURE_VERSION) errors.push(`Unsupported document version: ${document.version}`);
     if (!isObject(document.guild) || !asString(document.guild.name).trim()) errors.push("guild.name is required");
+    else {
+        if (asString(document.guild.name).length > 100) errors.push("guild.name must not exceed 100 characters");
+        if (asString(document.guild.description).length > 120) errors.push("guild.description must not exceed 120 characters");
+    }
     if (!Array.isArray(document.roles)) errors.push("roles must be an array");
     if (!Array.isArray(document.channels)) errors.push("channels must be an array");
     if (errors.length) return { valid: false, errors, warnings };
 
+    if (document.roles.length > 250) errors.push("Discord supports at most 250 roles per guild");
+    if (document.channels.length > 500) errors.push("Discord supports at most 500 channels per guild");
     const roleKeys = new Set();
     let everyoneCount = 0;
     for (const [index, role] of document.roles.entries()) {
@@ -186,6 +192,7 @@ export function validateStructureDocument(document) {
         else if (roleKeys.has(role.key)) errors.push(`Duplicate role key: ${role.key}`);
         else roleKeys.add(role.key);
         if (!asString(role.name).trim()) errors.push(`${label}.name is required`);
+        if (asString(role.name).length > 100) errors.push(`${label}.name must not exceed 100 characters`);
         if (decimalBits(role.permissions) === null) errors.push(`${label}.permissions must be an unsigned decimal bitfield string`);
         if (role.isEveryone || role.key === "everyone") everyoneCount++;
     }
@@ -200,6 +207,9 @@ export function validateStructureDocument(document) {
         else if (channelKeys.has(channel.key)) errors.push(`Duplicate channel key: ${channel.key}`);
         else channelKeys.add(channel.key);
         if (!asString(channel.name).trim()) errors.push(`${label}.name is required`);
+        if (asString(channel.name).length > 100) errors.push(`${label}.name must not exceed 100 characters`);
+        if (channel.topic != null && asString(channel.topic).length > 1024) errors.push(`${label}.topic must not exceed 1024 characters`);
+        if ((channel.permissionOverwrites ?? []).length > 100) errors.push(`${label} has more than 100 permission overwrites`);
         if (!SUPPORTED_CHANNEL_TYPES.includes(Number(channel.type))) errors.push(`${label} has unsupported channel type ${channel.type}`);
         if (Number(channel.type) === 4) categoryKeys.add(channel.key);
         if (channel.permissionOverwrites !== undefined && !Array.isArray(channel.permissionOverwrites)) {
@@ -209,13 +219,18 @@ export function validateStructureDocument(document) {
             const owLabel = `${label}.permissionOverwrites[${owIndex}]`;
             if (!isObject(overwrite)) { errors.push(`${owLabel} must be an object`); continue; }
             if (!["everyone", "role", "member", "unresolvedRole"].includes(overwrite.target)) errors.push(`${owLabel}.target must be everyone, role, member, or unresolvedRole`);
-            if (overwrite.target === "unresolvedRole") warnings.push(`${owLabel} references a managed or unavailable source role and cannot be mapped automatically`);
+            if (overwrite.target === "unresolvedRole") {
+                warnings.push(`${owLabel} references a managed or unavailable source role and cannot be mapped automatically`);
+                if (!asString(overwrite.sourceRoleId).trim()) errors.push(`${owLabel}.sourceRoleId is required for unresolvedRole`);
+            }
             if (overwrite.target === "role" && !roleKeys.has(overwrite.role)) errors.push(`${owLabel} references unknown role key "${overwrite.role}"`);
             if (overwrite.target === "member" && !asString(overwrite.memberId).trim()) errors.push(`${owLabel}.memberId is required`);
             if (decimalBits(overwrite.allow) === null || decimalBits(overwrite.deny) === null) errors.push(`${owLabel} allow/deny must be unsigned decimal bitfield strings`);
         }
     }
     for (const channel of document.channels) {
+        if (channel?.parent === channel?.key) errors.push(`Channel "${channel.name}" cannot be its own parent`);
+        if (Number(channel?.type) === 4 && channel?.parent) errors.push(`Category "${channel.name}" cannot have a parent category`);
         if (channel?.parent && !channelKeys.has(channel.parent)) errors.push(`Channel "${channel.name}" references unknown parent "${channel.parent}"`);
         else if (channel?.parent && !categoryKeys.has(channel.parent)) errors.push(`Channel "${channel.name}" parent must reference a category`);
     }
