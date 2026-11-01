@@ -893,6 +893,63 @@ function channelBody(
 }
 
 /**
+ * Повторное применение permission overwrites после резервного создания канала.
+ * Сначала применяется @everyone, чтобы приватный канал не оставался открытым
+ * во время последующей настройки ролевых разрешений.
+ */
+async function restorePermissionOverwrites(
+    channelId: string,
+    overwrites: any[],
+    guildId: string,
+    log: LogFn,
+    warnings: string[],
+    channelName: string
+): Promise<number> {
+    if (!Array.isArray(overwrites) || overwrites.length === 0) return 0;
+
+    const ordered = [...overwrites].sort((a, b) => {
+        if (a.id === guildId) return -1;
+        if (b.id === guildId) return 1;
+        return 0;
+    });
+    let failed = 0;
+
+    for (const overwrite of ordered) {
+        try {
+            await apiPut(`/channels/${channelId}/permissions/${overwrite.id}`, {
+                type: overwrite.type,
+                allow: String(overwrite.allow ?? "0"),
+                deny: String(overwrite.deny ?? "0")
+            }, log, true);
+        } catch (error: any) {
+            failed++;
+            const message = `Не удалось восстановить права «${channelName}» для overwrite ${overwrite.id}: ${errMsg(error)}`;
+            log(message, "warn");
+            warnings.push(message);
+        }
+    }
+
+    return failed;
+}
+
+function normalizePermissionBits(value: any): string {
+    try {
+        return BigInt(value ?? "0").toString();
+    } catch {
+        return String(value ?? "0");
+    }
+}
+
+function permissionOverwritesMatch(expected: any[], actual: any[]): boolean {
+    const key = (overwrite: any) =>
+        `${overwrite.type}:${overwrite.id}:${normalizePermissionBits(overwrite.allow)}:${normalizePermissionBits(overwrite.deny)}`;
+    const expectedKeys = (expected ?? []).map(key).sort();
+    const actualKeys = (actual ?? []).map(key).sort();
+    return expectedKeys.length === actualKeys.length &&
+        expectedKeys.every((value, index) => value === actualKeys[index]);
+}
+
+/**
  * Проверка является ли канал скрытым/приватным
  */
 function isChannelHidden(ch: any, srcGuildId: string): boolean {
@@ -1030,6 +1087,7 @@ async function copyChannelsWithVerification(
     let createdCount = 0;
     let failedCount = 0;
     const failedChannels: any[] = [];
+    const expectedOverwritesBySourceId = new Map<string, any[]>();
 
     for (const ch of orderedList) {
         if (isAborted?.()) {
@@ -1044,6 +1102,7 @@ async function copyChannelsWithVerification(
 
         const isHidden = isChannelHidden(ch, cfg.src);
         const full = channelBody(ch, idMap, roleMap, emojiMap, cfg, log, warnings, manualReviews);
+        expectedOverwritesBySourceId.set(ch.id, full.permission_overwrites ?? []);
         full.position = position++;
         let created: any = null;
 
@@ -1136,18 +1195,15 @@ async function copyChannelsWithVerification(
                     recovered = true;
                     log(`[Права] Канал «${ch.name}» создан без начальных прав (применяем права по отдельности)...`, "info");
 
-                    // Применяем права по одному
-                    if (full.permission_overwrites?.length) {
-                        for (const ow of full.permission_overwrites) {
-                            try {
-                                await apiPut(`/channels/${created.id}/permissions/${ow.id}`, {
-                                    type: ow.type,
-                                    allow: ow.allow,
-                                    deny: ow.deny
-                                }, log, true);
-                            } catch { /* одиночный сбой не ломает канал */ }
-                        }
-                    }
+                    // Восстанавливаем все исходные права и фиксируем ошибки для финального аудита.
+                    await restorePermissionOverwrites(
+                        created.id,
+                        full.permission_overwrites ?? [],
+                        cfg.dst,
+                        log,
+                        warnings,
+                        ch.name
+                    );
                 } catch {
                     // Переход к попытке создания в корне
                 }
@@ -1166,6 +1222,14 @@ async function copyChannelsWithVerification(
                     idMap.set(ch.id, created.id);
                     createdCount++;
                     recovered = true;
+                    await restorePermissionOverwrites(
+                        created.id,
+                        full.permission_overwrites ?? [],
+                        cfg.dst,
+                        log,
+                        warnings,
+                        ch.name
+                    );
                     log(`[В корне] Канал «${ch.name}» создан в корне сервера (без родительской категории)`, "info");
                     manualReviews.push({
                         type: "channel",
@@ -1209,6 +1273,14 @@ async function copyChannelsWithVerification(
                 const created = await apiPost(`/guilds/${cfg.dst}/channels`, minimal, log, true);
                 idMap.set(ch.id, created.id);
                 createdCount++;
+                await restorePermissionOverwrites(
+                    created.id,
+                    expectedOverwritesBySourceId.get(ch.id) ?? [],
+                    cfg.dst,
+                    log,
+                    warnings,
+                    ch.name
+                );
                 const note = retryType === 0 && ch.type !== 0 ? " (адаптирован как текстовый)" : "";
                 log(`[Восстановлен] Канал «${ch.name}» успешно создан${note}`, "success");
             } catch (retryErr) {
@@ -1243,8 +1315,30 @@ async function copyChannelsWithVerification(
 
     for (const ch of orderedList) {
         const targetId = idMap.get(ch.id);
-        if (targetId && targetChannels.some((tc: any) => tc.id === targetId)) {
+        const targetChannel = targetId
+            ? targetChannels.find((tc: any) => tc.id === targetId)
+            : undefined;
+        if (targetChannel) {
             verifiedCount++;
+            const expectedOverwrites = expectedOverwritesBySourceId.get(ch.id) ?? [];
+            if (!permissionOverwritesMatch(expectedOverwrites, targetChannel.permission_overwrites ?? [])) {
+                failedCount++;
+                const message = `Права канала «${ch.name}» не прошли проверку: исходные permission overwrites не совпадают с целевыми.`;
+                log(message, "error");
+                warnings.push(message);
+                manualReviews.push({
+                    type: ch.type === 4 ? "category" : "channel",
+                    name: ch.name,
+                    id: ch.id,
+                    details: {
+                        channelType: ch.type,
+                        channelTypeName: SUPPORTED_CHANNEL_TYPES[ch.type]?.name ?? (ch.type === 4 ? "Категория" : "Канал"),
+                        overwritesCount: expectedOverwrites.length
+                    },
+                    reason: "Discord не сохранил полный набор permission overwrites",
+                    actionRequired: "Проверить права @everyone и ролевые права канала на целевом сервере"
+                });
+            }
         }
     }
 
