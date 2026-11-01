@@ -1928,8 +1928,10 @@ async function importStructureIntoGuild(
     const supportsEnhancedColors = features.has("ENHANCED_ROLE_COLORS");
     const supportsCommunity = features.has("COMMUNITY");
 
-    if (document.guild.description) {
+    if (document.guild.description && supportsCommunity) {
         await apiPatch(`/guilds/${targetGuildId}`, { description: document.guild.description }, log);
+    } else if (document.guild.description) {
+        warnings.push("Описание сервера пропущено: Discord разрешает его настройку только для серверов с функцией Сообщества");
     }
 
     onProgress?.("Применение разрешений @everyone...", 5);
@@ -1951,6 +1953,7 @@ async function importStructureIntoGuild(
             mentionable: !!role.mentionable
         };
         if (role.unicodeEmoji && features.has("ROLE_ICONS")) body.unicode_emoji = role.unicodeEmoji;
+        else if (role.unicodeEmoji) warnings.push(`Роль «${role.name}»: Unicode-значок пропущен — целевой сервер не поддерживает ROLE_ICONS`);
         if (role.colors && Object.keys(role.colors).length) {
             if (supportsEnhancedColors) body.colors = role.colors;
             else if (role.colors.secondary_color != null || role.colors.tertiary_color != null) {
@@ -1978,6 +1981,7 @@ async function importStructureIntoGuild(
     }
 
     const channelIdMap = new Map<string, string>();
+    const expectedChannelById = new Map<string, { document: any; type: number; parentId: string | null; overwrites: any[] }>();
     let channelsCreated = 0;
     const ordered = [...plan.categories, ...plan.channels];
     for (let index = 0; index < ordered.length; index++) {
@@ -2016,13 +2020,31 @@ async function importStructureIntoGuild(
             }
         }
         if (type === 15 || type === 16) {
-            for (const field of ["default_auto_archive_duration", "default_thread_rate_limit_per_user", "default_sort_order", "default_forum_layout", "available_tags", "default_reaction_emoji"]) {
+            for (const field of ["default_auto_archive_duration", "default_thread_rate_limit_per_user", "default_sort_order", "default_forum_layout"]) {
                 if (channel[field] !== undefined && channel[field] !== null) body[field] = channel[field];
+            }
+            if (Array.isArray(channel.available_tags)) {
+                body.available_tags = channel.available_tags.map((tag: any) => {
+                    const { id, emoji_id, emoji_name, ...portableTag } = tag;
+                    if (emoji_id) warnings.push(`Тег форума «${tag.name}»: значок исходного сервера не переносится автоматически`);
+                    return portableTag;
+                });
+            }
+            if (channel.default_reaction_emoji?.emoji_id) {
+                warnings.push(`Канал «${channel.name}»: пользовательская реакция по умолчанию пропущена — emoji ID привязан к исходному серверу`);
+            } else if (channel.default_reaction_emoji) {
+                body.default_reaction_emoji = channel.default_reaction_emoji;
             }
         }
         const created = await apiPost(`/guilds/${targetGuildId}/channels`, body, log);
         if (!created?.id) throw new Error(`Discord не вернул ID для канала «${channel.name}»`);
         channelIdMap.set(channel.key, created.id);
+        expectedChannelById.set(String(created.id), {
+            document: channel,
+            type,
+            parentId: body.parent_id ?? null,
+            overwrites: body.permission_overwrites ?? []
+        });
         channelsCreated++;
     }
 
@@ -2031,13 +2053,33 @@ async function importStructureIntoGuild(
         apiGet(`/guilds/${targetGuildId}/roles`, log),
         apiGet(`/guilds/${targetGuildId}/channels`, log)
     ]);
-    const targetRoleIds = new Set((targetRoles ?? []).map((role: any) => String(role.id)));
-    for (const [key, id] of plan.roleMap.entries()) {
-        if (key !== "everyone" && !targetRoleIds.has(String(id))) warnings.push(`Роль «${key}» не найдена при контрольном чтении Discord API`);
+    const targetRoleById = new Map((targetRoles ?? []).map((role: any) => [String(role.id), role]));
+    for (const role of document.roles) {
+        const id = plan.roleMap.get(role.key);
+        const actual: any = id ? targetRoleById.get(String(id)) : null;
+        if (!actual) {
+            warnings.push(`Роль «${role.name}» не найдена при контрольном чтении Discord API`);
+            continue;
+        }
+        if (String(actual.permissions ?? "0") !== String(role.permissions ?? "0")) warnings.push(`Роль «${role.name}»: права после создания отличаются от документа`);
+        if (Number(actual.color ?? 0) !== Number(role.color ?? 0)) warnings.push(`Роль «${role.name}»: цвет после создания отличается от документа`);
+        if (!!actual.hoist !== !!role.hoist || !!actual.mentionable !== !!role.mentionable) warnings.push(`Роль «${role.name}»: параметры отображения отличаются от документа`);
     }
-    const targetChannelIds = new Set((targetChannels ?? []).map((channel: any) => String(channel.id)));
-    for (const [key, id] of channelIdMap.entries()) {
-        if (!targetChannelIds.has(String(id))) warnings.push(`Канал «${key}» не найден при контрольном чтении Discord API`);
+    const targetChannelById = new Map((targetChannels ?? []).map((channel: any) => [String(channel.id), channel]));
+    const normalizeOverwrites = (items: any[]) => items.map(item => ({
+        id: String(item.id), type: Number(item.type),
+        allow: String(item.allow ?? "0"), deny: String(item.deny ?? "0")
+    })).sort((a, b) => a.id.localeCompare(b.id) || a.type - b.type);
+    for (const [id, expected] of expectedChannelById.entries()) {
+        const actual: any = targetChannelById.get(id);
+        if (!actual) {
+            warnings.push(`Канал «${expected.document.name}» не найден при контрольном чтении Discord API`);
+            continue;
+        }
+        if (String(actual.parent_id ?? "") !== String(expected.parentId ?? "")) warnings.push(`Канал «${expected.document.name}»: категория после создания отличается от документа`);
+        if (JSON.stringify(normalizeOverwrites(actual.permission_overwrites ?? [])) !== JSON.stringify(normalizeOverwrites(expected.overwrites))) {
+            warnings.push(`Канал «${expected.document.name}»: права доступа после создания отличаются от документа`);
+        }
     }
     if (warnings.length) warnings.forEach(warning => log(warning, "warn"));
     onProgress?.("Импорт структуры завершён", 100);
