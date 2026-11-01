@@ -525,6 +525,85 @@ test('Fix 1: Pre-flight returns false on critical access error exception (401/40
     assert.equal(errList.length, 0);
 });
 
+// Role feature compatibility: premium role icons and enhanced colors must be gated by target guild features.
+export function prepareRolePayloadForFeatures(role, features = [], iconData = null) {
+    const featureSet = new Set(features);
+    const body = {
+        name: role.name,
+        permissions: role.permissions || '0',
+        color: role.color ?? 0,
+        hoist: !!role.hoist,
+        mentionable: !!role.mentionable
+    };
+
+    if (featureSet.has('ROLE_ICONS')) {
+        if (role.unicode_emoji) body.unicode_emoji = role.unicode_emoji;
+        if (role.icon && iconData) body.icon = iconData;
+    }
+
+    if (role.colors && typeof role.colors === 'object') {
+        body.color = role.colors.primary_color ?? role.color ?? 0;
+        if (featureSet.has('ENHANCED_ROLE_COLORS')) {
+            body.colors = {
+                primary_color: role.colors.primary_color ?? role.color ?? 0,
+                ...(role.colors.secondary_color !== undefined ? { secondary_color: role.colors.secondary_color } : {}),
+                ...(role.colors.tertiary_color !== undefined ? { tertiary_color: role.colors.tertiary_color } : {})
+            };
+        }
+    }
+
+    return body;
+}
+
+test('Role fallback: icon fields are omitted when target guild has no ROLE_ICONS feature', () => {
+    const role = {
+        name: 'Supporter',
+        permissions: '2048',
+        color: 0x123456,
+        hoist: true,
+        mentionable: true,
+        icon: 'role-icon-hash',
+        unicode_emoji: '⭐'
+    };
+
+    const body = prepareRolePayloadForFeatures(role, []);
+    assert.equal(body.icon, undefined);
+    assert.equal(body.unicode_emoji, undefined);
+    assert.equal(body.name, 'Supporter');
+    assert.equal(body.permissions, '2048');
+    assert.equal(body.color, 0x123456);
+    assert.equal(body.hoist, true);
+    assert.equal(body.mentionable, true);
+});
+
+test('Role fallback: role icons are preserved when target guild has ROLE_ICONS', () => {
+    const role = { name: 'Supporter', icon: 'role-icon-hash', unicode_emoji: '⭐' };
+    const body = prepareRolePayloadForFeatures(role, ['ROLE_ICONS'], 'data:image/png;base64,AAAA');
+    assert.equal(body.icon, 'data:image/png;base64,AAAA');
+    assert.equal(body.unicode_emoji, '⭐');
+});
+
+test('Role fallback: premium gradient fields are omitted without ENHANCED_ROLE_COLORS', () => {
+    const role = {
+        name: 'Gradient',
+        color: 0x112233,
+        colors: { primary_color: 0x112233, secondary_color: 0x445566, tertiary_color: 0x778899 }
+    };
+    const body = prepareRolePayloadForFeatures(role, []);
+    assert.equal(body.color, 0x112233);
+    assert.equal(body.colors, undefined);
+});
+
+test('Role fallback: gradient fields are preserved when ENHANCED_ROLE_COLORS is available', () => {
+    const role = {
+        name: 'Gradient',
+        colors: { primary_color: 0x112233, secondary_color: 0x445566, tertiary_color: 0x778899 }
+    };
+    const body = prepareRolePayloadForFeatures(role, ['ENHANCED_ROLE_COLORS']);
+    assert.equal(body.colors.secondary_color, 0x445566);
+    assert.equal(body.colors.tertiary_color, 0x778899);
+});
+
 // Role color processing test
 export function processRoleColors(role) {
     const body = {
