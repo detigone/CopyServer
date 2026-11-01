@@ -2004,7 +2004,7 @@ async function importStructureIntoGuild(
         const body: any = {
             name: channel.name,
             type,
-            position: index,
+            position: Number.isFinite(Number(channel.position)) ? Number(channel.position) : index,
             permission_overwrites: resolvedOverwrites.get(channel.key) ?? []
         };
         if (channel.parent) {
