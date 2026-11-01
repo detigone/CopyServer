@@ -1844,24 +1844,24 @@ async function runMerge(
         if (isAborted()) break;
         const sourceId = sourceIds[index];
         const sourceGuild = GuildStore.getGuilds()?.[sourceId];
-        log(\`[Объединение \${index + 1}/\${sourceIds.length}] Источник: \${sourceGuild?.name ?? sourceId}\`, "info");
+        log(`[Объединение ${index + 1}/${sourceIds.length}] Источник: ${sourceGuild?.name ?? sourceId}`, "info");
 
         let rolePositionOffset = 0;
         let channelPositionOffset = 0;
         try {
             const [targetRoles, targetChannels] = await Promise.all([
-                apiGet(\`/guilds/\${cfg.dst}/roles\`, log),
-                apiGet(\`/guilds/\${cfg.dst}/channels\`, log)
+                apiGet(`/guilds/${cfg.dst}/roles`, log),
+                apiGet(`/guilds/${cfg.dst}/channels`, log)
             ]);
             rolePositionOffset = Math.max(0, ...(targetRoles ?? []).map((role: any) => Number(role.position) || 0));
             channelPositionOffset = (targetChannels ?? []).length;
         } catch (error: any) {
-            aggregate.errors.push(\`Не удалось подготовить целевой сервер перед источником \${sourceId}: \${errMsg(error)}\`);
+            aggregate.errors.push(`Не удалось подготовить целевой сервер перед источником ${sourceId}: ${errMsg(error)}`);
             aggregate.status = "partial_with_errors";
             break;
         }
 
-        let sourceReport: AuditReport | null = null;
+        const sourceResult: { report: AuditReport | null } = { report: null };
         const sourceCfg: CopyCfg = {
             ...cfg, src: sourceId,
             roles: cfg.roles || cfg.channels,
@@ -1873,11 +1873,12 @@ async function runMerge(
         };
         await runCopy(
             sourceCfg, log,
-            (step, percent) => onProgress(\`Источник \${index + 1}/\${sourceIds.length}: \${step}\`,
+            (step, percent) => onProgress(`Источник ${index + 1}/${sourceIds.length}: ${step}`,
                 Math.min(99, Math.round((index * 100 + percent) / sourceIds.length))),
             isAborted,
-            report => { sourceReport = report; }
+            report => { sourceResult.report = report; }
         );
+        const sourceReport = sourceResult.report;
         if (!sourceReport) continue;
         addMetrics(aggregate.roles, sourceReport.roles);
         addMetrics(aggregate.channels, sourceReport.channels);
@@ -1896,7 +1897,7 @@ async function runMerge(
     if (isAborted()) aggregate.status = "aborted";
     else if (aggregate.errors.length || aggregate.roles.failed || aggregate.channels.failed || aggregate.manualReviewList.length) aggregate.status = "partial_with_errors";
     onProgress(aggregate.status === "success" ? "Объединение завершено" : "Объединение завершено с замечаниями", 100);
-    log(\`Объединение серверов завершено за \${aggregate.durationSec} сек.; ошибок: \${aggregate.errors.length}, ручных проверок: \${aggregate.manualReviewList.length}\`,
+    log(`Объединение серверов завершено за ${aggregate.durationSec} сек.; ошибок: ${aggregate.errors.length}, ручных проверок: ${aggregate.manualReviewList.length}`,
         aggregate.status === "success" ? "success" : "warn");
     onAuditReady(aggregate);
 }
@@ -2201,10 +2202,19 @@ function SettingsPanel() {
         setProgressPercent(0);
         setProgressStep("Инициализация защищенного копирования...");
 
+        let roleIdsForRun = selectedRoleIds;
+        if (selectedRoleIds !== null && sourceChannels.length > 0) {
+            const chosenChannels = selectedChannelIds === null ? null : new Set(selectedChannelIds);
+            const selectedCategories = new Set(sourceChannels.filter((channel: any) => channel.type === 4 && chosenChannels?.has(channel.id)).map((channel: any) => channel.id));
+            const requiredParents = new Set(sourceChannels.filter((channel: any) => chosenChannels?.has(channel.id) && channel.parent_id).map((channel: any) => channel.parent_id));
+            const includedChannels = sourceChannels.filter((channel: any) => chosenChannels === null || chosenChannels.has(channel.id) || (channel.parent_id && selectedCategories.has(channel.parent_id)) || (channel.type === 4 && requiredParents.has(channel.id)));
+            const requiredRoleIds = includedChannels.flatMap((channel: any) => (channel.permission_overwrites ?? []).filter((overwrite: any) => overwrite.type === 0 && overwrite.id !== src).map((overwrite: any) => overwrite.id));
+            roleIdsForRun = Array.from(new Set([...selectedRoleIds, ...requiredRoleIds]));
+        }
         const baseCfg: CopyCfg = {
             src, dst, roles, channels, emojis, settings, images, userOW, skipDuplicates,
             watermark, watermarkText, stealthMode, copyHiddenChannels, orphanChannelPolicy,
-            selectedRoleIds, selectedChannelIds
+            selectedRoleIds: roleIdsForRun, selectedChannelIds
         };
         const task = operationMode === "merge"
             ? runMerge(baseCfg, mergeSourceIds, log, onProgress, () => abortRef.current, report => setAuditReport(report))
@@ -2616,7 +2626,7 @@ function SettingsPanel() {
                         </div>
                     </div>
                     <div style={{ gridColumn: "1 / -1", fontSize: "11px", color: "var(--text-muted)" }}>
-                        Выбор категории автоматически включает её дочерние каналы. Выбор отдельного канала автоматически добавляет его родительскую категорию. Роли, используемые в правах выбранных каналов, необходимо также оставить выбранными.
+                        Выбор категории автоматически включает её дочерние каналы. Выбор отдельного канала автоматически добавляет его родительскую категорию. Роли, используемые в правах выбранных каналов и категорий, добавляются автоматически, чтобы сохранить permission overwrites.
                     </div>
                 </div>
             )}
