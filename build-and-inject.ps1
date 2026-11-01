@@ -58,13 +58,33 @@ function Resolve-VencordSource([string]$RequestedPath) {
         }
     }
 
-    if ($found.Count -eq 0) {
-        throw "Не удалось найти исходники Vencord. Укажи путь через -VencordSource или переменную VENCORD_SOURCE."
+    if ($found.Count -eq 1) {
+        return $found[0]
     }
+
     if ($found.Count -gt 1) {
-        throw ("Найдено несколько каталогов Vencord: " + ($found -join "; ") + ". Укажи нужный через -VencordSource.")
+        Write-Host "Найдено несколько каталогов Vencord:" -ForegroundColor Yellow
+        for ($i = 0; $i -lt $found.Count; $i++) {
+            Write-Host "  $($i + 1). $($found[$i])"
+        }
+        $selection = Read-Host "Выбери номер или введи другой путь"
+        $number = 0
+        if ([int]::TryParse($selection, [ref]$number) -and $number -ge 1 -and $number -le $found.Count) {
+            return $found[$number - 1]
+        }
+        if (-not [string]::IsNullOrWhiteSpace($selection) -and (Test-VencordSource $selection)) {
+            return [System.IO.Path]::GetFullPath($selection)
+        }
+        throw "Не выбран корректный каталог исходников Vencord."
     }
-    return $found[0]
+
+    Write-Host "Исходники Vencord автоматически не найдены." -ForegroundColor Yellow
+    Write-Host "Укажи папку с package.json и scripts\build\build.mjs."
+    $manualPath = Read-Host "Путь к исходникам Vencord"
+    if ([string]::IsNullOrWhiteSpace($manualPath) -or -not (Test-VencordSource $manualPath)) {
+        throw "Не удалось подтвердить каталог исходников Vencord."
+    }
+    return [System.IO.Path]::GetFullPath($manualPath)
 }
 
 function Stop-DiscordGracefully {
@@ -197,12 +217,32 @@ try {
 
     $VencordSource = Resolve-VencordSource $VencordSource
     $InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
-    if (-not (Test-Path -LiteralPath $InstallDir -PathType Container)) {
-        throw "Каталог установленного Vencord не найден: $InstallDir. Установи Vencord или укажи корректный -InstallDir."
+    $requiredInstalledFiles = @("patcher.js", "preload.js", "renderer.js")
+    $installDirIsValid = (Test-Path -LiteralPath $InstallDir -PathType Container)
+    if ($installDirIsValid) {
+        foreach ($requiredInstalledFile in $requiredInstalledFiles) {
+            if (-not (Test-Path -LiteralPath (Join-Path $InstallDir $requiredInstalledFile) -PathType Leaf)) {
+                $installDirIsValid = $false
+                break
+            }
+        }
     }
-    foreach ($requiredInstalledFile in @("patcher.js", "preload.js", "renderer.js")) {
-        if (-not (Test-Path -LiteralPath (Join-Path $InstallDir $requiredInstalledFile) -PathType Leaf)) {
-            throw "В каталоге установки отсутствует $requiredInstalledFile. Путь не похож на Vencord dist; установка отменена."
+
+    if (-not $installDirIsValid) {
+        Write-Host "Каталог Vencord dist не найден по стандартному пути: $InstallDir" -ForegroundColor Yellow
+        Write-Host "Нужна именно папка, в которой лежат patcher.js, preload.js и renderer.js."
+        $manualInstallDir = Read-Host "Путь к папке Vencord dist"
+        if ([string]::IsNullOrWhiteSpace($manualInstallDir)) {
+            throw "Путь к установленному Vencord не указан."
+        }
+        $InstallDir = [System.IO.Path]::GetFullPath($manualInstallDir)
+        if (-not (Test-Path -LiteralPath $InstallDir -PathType Container)) {
+            throw "Каталог не существует: $InstallDir"
+        }
+        foreach ($requiredInstalledFile in $requiredInstalledFiles) {
+            if (-not (Test-Path -LiteralPath (Join-Path $InstallDir $requiredInstalledFile) -PathType Leaf)) {
+                throw "В выбранном каталоге отсутствует $requiredInstalledFile. Выбери папку Vencord dist."
+            }
         }
     }
 
