@@ -1,4 +1,4 @@
-# CopyServer — безопасная сборка и установка пользовательского плагина Vencord
+﻿# CopyServer — безопасная сборка и установка пользовательского плагина Vencord
 # Запуск: .\build-and-inject.ps1
 # Dev-сборка: .\build-and-inject.ps1 -Dev
 # Откат последней установки: .\build-and-inject.ps1 -Rollback
@@ -8,7 +8,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$PluginSource = (Join-Path $PSScriptRoot "serverCloner\index.tsx"),
+    [string]$PluginSource,
     [string]$VencordSource = $env:VENCORD_SOURCE,
     [string]$InstallDir = (Join-Path $env:APPDATA "Vencord\dist"),
     [string]$DiscordPath,
@@ -18,6 +18,21 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Resolve the script directory after parameter binding. $PSScriptRoot may be empty
+# in some PowerShell launch contexts, so fall back to the invocation path.
+$scriptRoot = $PSScriptRoot
+if ([string]::IsNullOrWhiteSpace($scriptRoot)) {
+    $invokedScriptPath = $MyInvocation.MyCommand.Path
+    if (-not [string]::IsNullOrWhiteSpace($invokedScriptPath)) {
+        $scriptRoot = Split-Path -Parent ([System.IO.Path]::GetFullPath($invokedScriptPath))
+    } else {
+        $scriptRoot = (Get-Location).Path
+    }
+}
+if ([string]::IsNullOrWhiteSpace($PluginSource)) {
+    $PluginSource = Join-Path $scriptRoot "serverCloner\\index.tsx"
+}
 
 function Write-Step([int]$Number, [int]$Total, [string]$Message) {
     Write-Host ""
