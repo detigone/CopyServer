@@ -1,4 +1,4 @@
-# CopyServer — безопасная сборка и установка пользовательского плагина Vencord
+﻿# CopyServer — безопасная сборка и установка пользовательского плагина Vencord
 # Запуск: .\build-and-inject.ps1
 # Dev-сборка: .\build-and-inject.ps1 -Dev
 # Откат последней установки: .\build-and-inject.ps1 -Rollback
@@ -8,7 +8,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$PluginSource = (Join-Path $PSScriptRoot "serverCloner\index.tsx"),
+    [string]$PluginSource,
     [string]$VencordSource = $env:VENCORD_SOURCE,
     [string]$InstallDir = (Join-Path $env:APPDATA "Vencord\dist"),
     [string]$DiscordPath,
@@ -18,6 +18,21 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Resolve paths after parameter binding. This avoids empty $PSScriptRoot values
+# in some PowerShell launch contexts and keeps relative paths script-local.
+$scriptRoot = $PSScriptRoot
+if ([string]::IsNullOrWhiteSpace($scriptRoot)) {
+    $invokedScriptPath = $MyInvocation.MyCommand.Path
+    if (-not [string]::IsNullOrWhiteSpace($invokedScriptPath)) {
+        $scriptRoot = Split-Path -Parent ([System.IO.Path]::GetFullPath($invokedScriptPath))
+    } else {
+        $scriptRoot = (Get-Location).Path
+    }
+}
+if ([string]::IsNullOrWhiteSpace($PluginSource)) {
+    $PluginSource = Join-Path $scriptRoot "serverCloner\index.tsx"
+}
 
 function Write-Step([int]$Number, [int]$Total, [string]$Message) {
     Write-Host ""
@@ -44,7 +59,7 @@ function Resolve-VencordSource([string]$RequestedPath) {
     $candidates = @()
     if ($env:VENCORD_SOURCE) { $candidates += $env:VENCORD_SOURCE }
     $candidates += @(
-        (Join-Path $PSScriptRoot "..\VencordSource"),
+        (Join-Path $scriptRoot "..\VencordSource"),
         (Join-Path $HOME "VencordSource"),
         (Join-Path $HOME "Vencord"),
         (Join-Path $HOME "source\Vencord"),
