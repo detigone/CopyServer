@@ -56,6 +56,7 @@ function Resolve-VencordSource([string]$RequestedPath) {
         return $resolved
     }
 
+    $autoSource = Join-Path $env:LOCALAPPDATA "CopyServer\VencordSource"
     $candidates = @()
     if ($env:VENCORD_SOURCE) { $candidates += $env:VENCORD_SOURCE }
     $candidates += @(
@@ -63,54 +64,70 @@ function Resolve-VencordSource([string]$RequestedPath) {
         (Join-Path $HOME "VencordSource"),
         (Join-Path $HOME "Vencord"),
         (Join-Path $HOME "source\Vencord"),
-        (Join-Path $HOME "Projects\Vencord")
+        (Join-Path $HOME "Projects\Vencord"),
+        $autoSource
     )
 
+    $selectedSource = $null
     foreach ($candidate in ($candidates | Select-Object -Unique)) {
         if (Test-VencordSource $candidate) {
-            return [System.IO.Path]::GetFullPath($candidate)
+            $selectedSource = [System.IO.Path]::GetFullPath($candidate)
+            break
         }
     }
 
-    # Official Vencord does not support loading arbitrary user plugins into
-    # the prebuilt installer build. Prepare a dedicated source checkout instead.
-    $autoSource = Join-Path $env:LOCALAPPDATA "CopyServer\VencordSource"
-    if (Test-Path -LiteralPath $autoSource) {
-        throw "Каталог для исходников CopyServer уже существует, но не является рабочими исходниками Vencord: $autoSource. Удали или переименуй его либо укажи путь через -VencordSource."
+    if (-not $selectedSource) {
+        # Official Vencord requires a source build for arbitrary user plugins.
+        # Bootstrap a dedicated checkout so users do not need to find it manually.
+        if (Test-Path -LiteralPath $autoSource) {
+            throw "Каталог для исходников CopyServer существует, но не является рабочими исходниками Vencord: $autoSource. Удали или переименуй его либо укажи путь через -VencordSource."
+        }
+        if (-not (Get-Command "git" -ErrorAction SilentlyContinue)) {
+            throw "Git не найден в PATH. Установи Git for Windows и повтори запуск."
+        }
+        if (-not (Get-Command "node" -ErrorAction SilentlyContinue)) {
+            throw "Node.js не найден в PATH. Установи Node.js и повтори запуск."
+        }
+        if (-not (Get-Command "pnpm" -ErrorAction SilentlyContinue)) {
+            throw "pnpm не найден в PATH. Установи pnpm и повтори запуск."
+        }
+
+        $sourceParent = Split-Path -Parent $autoSource
+        New-Item -ItemType Directory -Force -Path $sourceParent | Out-Null
+        Write-Host "Исходники Vencord не найдены. Загружаю официальный репозиторий автоматически..." -ForegroundColor Yellow
+        & git clone https://github.com/Vendicated/Vencord.git $autoSource
+        if ($LASTEXITCODE -ne 0 -or -not (Test-VencordSource $autoSource)) {
+            if (Test-Path -LiteralPath $autoSource) {
+                Remove-Item -LiteralPath $autoSource -Recurse -Force
+            }
+            throw "Не удалось загрузить исходники Vencord. Проверь подключение к GitHub и повтори запуск."
+        }
+        $selectedSource = [System.IO.Path]::GetFullPath($autoSource)
     }
 
-    if (-not (Get-Command "git" -ErrorAction SilentlyContinue)) {
-        throw "Git не найден в PATH. Установи Git for Windows и повтори запуск."
-    }
-    if (-not (Get-Command "node" -ErrorAction SilentlyContinue)) {
-        throw "Node.js не найден в PATH. Установи Node.js и повтори запуск."
-    }
-    if (-not (Get-Command "pnpm" -ErrorAction SilentlyContinue)) {
-        throw "pnpm не найден в PATH. Установи pnpm и повтори запуск."
-    }
-
-    $sourceParent = Split-Path -Parent $autoSource
-    New-Item -ItemType Directory -Force -Path $sourceParent | Out-Null
-
-    Write-Host "Исходники Vencord не найдены. Загружаю официальный репозиторий автоматически..." -ForegroundColor Yellow
-    & git clone https://github.com/Vendicated/Vencord.git $autoSource
-    if ($LASTEXITCODE -ne 0 -or -not (Test-VencordSource $autoSource)) {
-        throw "Не удалось загрузить исходники Vencord. Проверь подключение к GitHub и повтори запуск."
-    }
-
-    Write-Host "Устанавливаю зависимости Vencord (первый запуск может занять несколько минут)..." -ForegroundColor Cyan
-    Push-Location $autoSource
-    try {
-        & pnpm install --frozen-lockfile
-        $installExitCode = $LASTEXITCODE
-    } finally {
-        Pop-Location
-    }
-    if ($installExitCode -ne 0) {
-        throw "Установка зависимостей Vencord завершилась с кодом $installExitCode. Исходники сохранены в $autoSource; повтори запуск после исправления ошибки."
+    if ($selectedSource -eq [System.IO.Path]::GetFullPath($autoSource)) {
+        if (-not (Get-Command "node" -ErrorAction SilentlyContinue)) {
+            throw "Node.js не найден в PATH. Установи Node.js и повтори запуск."
+        }
+        if (-not (Get-Command "pnpm" -ErrorAction SilentlyContinue)) {
+            throw "pnpm не найден в PATH. Установи pnpm и повтори запуск."
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $selectedSource "node_modules") -PathType Container)) {
+            Write-Host "Устанавливаю зависимости Vencord (первый запуск может занять несколько минут)..." -ForegroundColor Cyan
+            Push-Location $selectedSource
+            try {
+                & pnpm install --frozen-lockfile
+                $installExitCode = $LASTEXITCODE
+            } finally {
+                Pop-Location
+            }
+            if ($installExitCode -ne 0) {
+                throw "Установка зависимостей Vencord завершилась с кодом $installExitCode. Исходники сохранены в $selectedSource; повтори запуск после исправления ошибки."
+            }
+        }
     }
 
-    return [System.IO.Path]::GetFullPath($autoSource)
+    return $selectedSource
 }
 
 function Stop-DiscordGracefully {
