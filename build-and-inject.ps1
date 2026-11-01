@@ -200,6 +200,11 @@ try {
     if (-not (Test-Path -LiteralPath $InstallDir -PathType Container)) {
         throw "Каталог установленного Vencord не найден: $InstallDir. Установи Vencord или укажи корректный -InstallDir."
     }
+    foreach ($requiredInstalledFile in @("patcher.js", "preload.js", "renderer.js")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $InstallDir $requiredInstalledFile) -PathType Leaf)) {
+            throw "В каталоге установки отсутствует $requiredInstalledFile. Путь не похож на Vencord dist; установка отменена."
+        }
+    }
 
     if (-not (Get-Command "node" -ErrorAction SilentlyContinue)) {
         throw "Node.js не найден в PATH."
