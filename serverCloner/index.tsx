@@ -952,16 +952,29 @@ function permissionOverwritesMatch(expected: any[], actual: any[]): boolean {
 /**
  * Проверка является ли канал скрытым/приватным
  */
-function isChannelHidden(ch: any, srcGuildId: string): boolean {
-    if (!ch.permission_overwrites) return false;
-    const everyoneOW = ch.permission_overwrites.find((ow: any) => ow.id === srcGuildId && ow.type === 0);
-    if (!everyoneOW) return false;
-    try {
-        const denyBig = BigInt(everyoneOW.deny || "0");
-        return (denyBig & 1024n) === 1024n;
-    } catch {
-        return false;
+function isChannelHidden(
+    ch: any,
+    srcGuildId: string,
+    categoryMap?: Map<string, any>
+): boolean {
+    const hasEveryoneViewDeny = (overwrites: any[] | undefined): boolean => {
+        const everyoneOW = overwrites?.find((ow: any) => ow.id === srcGuildId && ow.type === 0);
+        if (!everyoneOW) return false;
+        try {
+            return (BigInt(everyoneOW.deny || "0") & 1024n) === 1024n;
+        } catch {
+            return false;
+        }
+    };
+
+    // Explicit channel overwrites take precedence. A channel with no local
+    // overwrites inherits the visibility restriction of its parent category.
+    if (Array.isArray(ch.permission_overwrites) && ch.permission_overwrites.length > 0) {
+        return hasEveryoneViewDeny(ch.permission_overwrites);
     }
+
+    const parentCategory = ch.parent_id ? categoryMap?.get(ch.parent_id) : undefined;
+    return hasEveryoneViewDeny(parentCategory?.permission_overwrites);
 }
 
 /**
@@ -1006,7 +1019,7 @@ async function copyChannelsWithVerification(
 
     let hiddenCount = 0;
     usable.forEach((ch: any) => {
-        if (isChannelHidden(ch, cfg.src)) hiddenCount++;
+        if (isChannelHidden(ch, cfg.src, categoryMap)) hiddenCount++;
     });
 
     log(`Обнаружено поддерживаемых каналов: ${usable.length} (из них скрытых/приватных: ${hiddenCount})`, "info");
@@ -1016,7 +1029,7 @@ async function copyChannelsWithVerification(
     const activeCategories: any[] = [];
 
     for (const cat of categories) {
-        const isHidden = isChannelHidden(cat, cfg.src);
+        const isHidden = isChannelHidden(cat, cfg.src, categoryMap);
         if (cfg.copyHiddenChannels === false && isHidden) {
             excludedCategoryIds.add(cat.id);
             log(`[Дерево категорий] Скрытая категория «${cat.name}» исключена пользователем`, "warn");
@@ -1031,7 +1044,7 @@ async function copyChannelsWithVerification(
     let skippedByFilterCount = 0;
 
     for (const ch of nonCats) {
-        const isHidden = isChannelHidden(ch, cfg.src);
+        const isHidden = isChannelHidden(ch, cfg.src, categoryMap);
         if (cfg.copyHiddenChannels === false && isHidden) {
             skippedByFilterCount++;
             continue;
